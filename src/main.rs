@@ -5,7 +5,6 @@ use rust_htslib::bam::{Header, Read, Reader, Record, Writer};
 #[derive(Parser)]
 pub struct Args {
     pub input: String,
-    // pub output: Option<String>,
 }
 
 pub struct ReadBuffer {
@@ -15,25 +14,33 @@ pub struct ReadBuffer {
     tid: u32,
 }
 
+pub enum BufPushResult {
+    BeforeWindow,
+    AfterWindow,
+    Pushed,
+    DifferentReference,
+}
+
 impl ReadBuffer {
-    pub fn push(&mut self, r: Record) -> u8 {
+    pub fn push(&mut self, r: Record) -> BufPushResult {
         if r.tid() as u32 != self.tid {
-            0
-        } else {
-            if r.seq_len() > self.len {
-                self.len = r.seq_len();
-            }
-            if r.pos() as usize + self.len < self.pos {
-                1
-            } else {
-                if r.pos() as usize > self.pos + self.len {
-                    1
-                } else {
-                    self.rbuf.push(r);
-                    0
-                }
-            }
+            return BufPushResult::DifferentReference;
         }
+
+        if r.seq_len() > self.len {
+            self.len = r.seq_len();
+        }
+
+        if r.pos() as usize + self.len < self.pos {
+            return BufPushResult::BeforeWindow;
+        }
+
+        if r.pos() as usize > self.pos + self.len {
+            return BufPushResult::AfterWindow;
+        }
+
+        self.rbuf.push(r);
+        BufPushResult::Pushed
     }
 
     pub fn new() -> Self {
@@ -59,9 +66,18 @@ fn main() -> Result<(), Error> {
     let mut read_buf = ReadBuffer::new();
     read_buf.tid = tid;
     read_buf.pos = pos;
+    let mut ret: BufPushResult;
 
     for record in reader.records() {
-        read_buf.push(record?);
+        ret = read_buf.push(record?);
+        match ret {
+            // no need to keep searching, since reads no longer overlap with position
+            BufPushResult::AfterWindow => break,
+
+            // need to switch reference, no more reads
+            BufPushResult::DifferentReference => break,
+            _ => (),
+        }
     }
 
     let mut writer = Writer::from_stdout(
