@@ -11,15 +11,13 @@ pub struct Args {
 
 fn main() -> Result<(), Error> {
     let args = Args::parse();
-    let pos = 0;
-    let tid = 0;
 
-    let mut pileup = rpileup::PileUp::new(&args.input, Some(tid), Some(pos))?;
+    let mut pileup = rpileup::PileUp::new(&args.input, None, None)?;
     let mut ret: rpileup::IterResult;
     loop {
         ret = pileup.next()?;
         match ret {
-            rpileup::IterResult::NoData => break,
+            rpileup::IterResult::NoData | rpileup::IterResult::ReferenceEnd => break,
             _ => (),
         }
     }

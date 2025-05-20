@@ -12,6 +12,7 @@ pub struct ReadBuffer {
     pub tid: u32,
 }
 
+#[derive(Debug)]
 pub enum BufPushResult {
     BeforeWindow,
     AfterWindow,
@@ -38,12 +39,11 @@ impl ReadBuffer {
         }
 
         if r.pos() as usize + self.len < self.pos {
-            println! {"before window"}
             return BufPushResult::BeforeWindow;
         }
 
         if r.pos() as usize > self.pos + self.len {
-            println! {"{} {} after window", self.pos, self.len}
+            println! {"STOPPING FILL: {} < {} + {}", self.pos, r.pos(), self.len}
             return BufPushResult::AfterWindow;
         }
 
