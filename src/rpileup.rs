@@ -142,7 +142,7 @@ impl PileUp {
         Ok(ret)
     }
 
-    pub fn set_pileup(&mut self) {
+    pub fn set_pileup(&mut self) -> Result<(), Error> {
         let mut ndel @ mut nins @ mut nbases = 0;
         let mut to_remove: VecDeque<usize> = VecDeque::new();
 
@@ -151,8 +151,9 @@ impl PileUp {
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
             match ret {
                 CigarResult::Op(Cigar::Match(_)) => {
-                    let base = r.rec.seq().encoded_base(ipos as usize).to_ascii_uppercase();
-                    print! {" {base}"}
+                    let base = String::from_utf8(vec![r.rec.seq()[ipos as usize]])?;
+
+                    print! {" {}", base}
                     nbases += 1;
                 }
 
@@ -178,6 +179,8 @@ impl PileUp {
         }
 
         print! {"\n"}
+
+        Ok(())
     }
 
     pub fn next(&mut self) -> Result<IterResult, Error> {
