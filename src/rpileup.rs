@@ -14,6 +14,7 @@ pub struct PileUp {
     rbuf: read_buf::ReadBuffer,
     reader: Reader,
     header: HeaderView,
+    ref_seq: Option<Vec<u8>>,
 }
 
 pub enum IterResult {
@@ -104,6 +105,7 @@ impl PileUp {
         let reader = Reader::from_path(bam_fname)?;
         let rbuf = read_buf::ReadBuffer::new();
         let header = reader.header().clone();
+        let ref_seq = None;
 
         Ok(Self {
             tid,
@@ -111,6 +113,7 @@ impl PileUp {
             rbuf,
             reader,
             header,
+            ref_seq,
         })
     }
 
@@ -156,6 +159,10 @@ impl PileUp {
         let mut ndel @ mut nins @ mut nbases = 0;
         let mut to_remove: VecDeque<usize> = VecDeque::new();
         let mut seq: Vec<u8> = Vec::new();
+        let ref_base = match &self.ref_seq {
+            Some(seq) => char::from(seq[self.pos]),
+            None => 'N',
+        };
 
         for (i, r) in self.rbuf.rbuf.iter_mut().enumerate() {
             let mut ipos: i32 = -1;
@@ -184,7 +191,7 @@ impl PileUp {
             }
         }
 
-        print! {"{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos, nbases}
+        print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos + 1, ref_base, nbases}
         print! {"{}", std::str::from_utf8(&seq)?}
 
         while let Some(i) = to_remove.pop_back() {
