@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 
 const UNINIT_POS: usize = usize::MAX - 1;
 const UNINIT_TID: u32 = u32::MAX - 1;
+const BASE_SPACER: &str = "";
 
 pub struct PileUp {
     tid: u32,
@@ -24,19 +25,22 @@ pub enum IterResult {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CigarResult {
-    OutOfBounds(),
+    BeforePos(),
     Op(Cigar),
+    BaseEmpty(),
 }
 
 pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResult {
     let cig = &cs.cig;
     let ncig = cig.len();
+    let mut op: Cigar;
     while cs.bam_pos <= pos {
         if cs.icig >= ncig {
-            return CigarResult::OutOfBounds();
+            return CigarResult::BeforePos();
         }
 
-        let op = cig[cs.icig];
+        op = cig[cs.icig];
+        // println!("{:?} {} {} {}", op, cs.bam_pos, pos, cs.cig);
         match op {
             Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
                 let end_pos = cs.bam_pos + len - 1;
@@ -92,7 +96,7 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResu
         }
     }
 
-    CigarResult::OutOfBounds()
+    CigarResult::BaseEmpty()
 }
 
 impl PileUp {
@@ -146,14 +150,16 @@ impl PileUp {
         let mut ndel @ mut nins @ mut nbases = 0;
         let mut to_remove: VecDeque<usize> = VecDeque::new();
 
+        print! {"{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos}
         for (i, r) in self.rbuf.rbuf.iter_mut().enumerate() {
             let mut ipos: i32 = -1;
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
+            // println! {"{:?} {} {} {} {}", ret, self.pos, r.rec.pos(), r.cstate.cig, r.cstate.icig}
             match ret {
                 CigarResult::Op(Cigar::Match(_)) => {
                     let base = String::from_utf8(vec![r.rec.seq()[ipos as usize]])?;
 
-                    print! {" {}", base}
+                    print! {"{BASE_SPACER}{base}"}
                     nbases += 1;
                 }
 
@@ -165,14 +171,16 @@ impl PileUp {
                     }
                 }
 
-                CigarResult::OutOfBounds() => {
-                    // println! {"{} {} {}", self.pos, r.rec.pos(), self.rbuf.len}
+                CigarResult::BeforePos() => {
                     to_remove.push_back(i);
                 }
 
+                CigarResult::BaseEmpty() => (),
                 _ => panic!(),
             }
         }
+
+        // assert_eq!(nbases, self.rbuf.rbuf.len(), "{}", self.pos);
 
         while let Some(i) = to_remove.pop_back() {
             self.rbuf.rbuf.swap_remove(i);
@@ -185,27 +193,25 @@ impl PileUp {
 
     pub fn next(&mut self) -> Result<IterResult, Error> {
         self.pos += 1;
+
+        // reached end of reference, so increment tid
         if self.pos != UNINIT_POS + 1
-            && self.pos
-                >= self
-                    .header
-                    .target_len(self.tid)
-                    .context("Unable to get ref len")? as usize
+            && self.pos >= self.header.target_len(self.tid).context("no len")? as usize
         {
             self.tid += 1;
             self.pos = UNINIT_POS;
-            if self.header.target_count() <= self.tid {
-                Ok(IterResult::NoData)
+
+            if self.header.target_count() > self.tid {
+                // no more references
+                return Ok(IterResult::NoData);
             } else {
-                Ok(IterResult::ReferenceEnd)
+                // another reference left
+                return Ok(IterResult::ReferenceEnd);
             }
-        } else {
-            let r = self.fill_buffer();
-            println! {"{:?}", r}
-            println! {"{}", self.pos}
-            self.set_pileup();
-            Ok(IterResult::Generated)
         }
+        let _r = self.fill_buffer();
+        _ = self.set_pileup();
+        Ok(IterResult::Generated)
     }
 }
 
