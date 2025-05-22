@@ -1,12 +1,21 @@
 use crate::read_buf;
-use crate::read_buf::CigarState;
+use crate::read_buf::{CigarState, CIG_POS_UNINIT};
 use anyhow::{Context, Error};
 use rust_htslib::bam::record::Cigar;
-use rust_htslib::bam::{HeaderView, Read, Reader};
+use rust_htslib::bam::{ext::BamRecordExtensions, HeaderView, Read, Reader, Record};
 use std::collections::VecDeque;
 
 const UNINIT_POS: usize = usize::MAX - 1;
 const UNINIT_TID: u32 = u32::MAX - 1;
+
+const LAST_POS: u8 = b'$';
+const FIRST_POS: u8 = b'^';
+
+const INSERTION: u8 = b'+';
+const DELETION: u8 = b'-';
+
+const F_MATCH: u8 = b'.';
+const R_MATCH: u8 = b',';
 
 pub struct PileUp {
     tid: u32,
@@ -29,6 +38,164 @@ pub enum CigarResult {
     Op(Cigar),
     BaseEmpty(),
 }
+
+pub fn get_base_pileup(
+    cs: &CigarState,
+    r: &Record,
+    ipos: u32,
+    pos: usize,
+    kstring_buf: &mut Vec<u8>,
+    ref_base: u8,
+) {
+    let ipos = ipos as usize;
+    let iseq = cs.iseq as usize;
+    let bam_pos = cs.bam_pos as usize;
+
+    if pos == r.reference_end() as usize - 1 {
+        kstring_buf.push(LAST_POS);
+    }
+
+    if pos == bam_pos {
+        kstring_buf.push(FIRST_POS)
+    }
+
+    let cur_base = r.seq()[ipos];
+    let base: u8;
+
+    if ref_base != cur_base {
+        base = cur_base;
+    } else {
+        if r.is_reverse() {
+            base = R_MATCH;
+        } else {
+            base = F_MATCH;
+        }
+    };
+
+    kstring_buf.push(base);
+}
+
+/// Get the base of a read at a specific reference coordinate, considering the cigar of the
+/// alignment. This is necessary to adjust for clipped bases, insertions, and deletions that would
+/// not be accounted for when blindly indexing into the read sequence.
+///
+/// This function will traverse the cigar string up until or after the queried reference position,
+/// will adjust the read start and end according to clips, deletions, and insertions, and return
+/// whether the base in the read aligned to the reference is absent (e.g. softclip) or present.
+// pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResult {
+//     // read not yet processed
+//     let mut k: usize = 0;
+//     if cs.icig == CIG_POS_UNINIT {
+//         cs.icig = 0;
+//         match cs.cig[0] {
+//             Cigar::Match(_) | Cigar::Equal(_) | Cigar::Diff(_) => (),
+
+//             _ => {
+//                 let n_cig = cs.cig.len();
+//                 for i in 0..n_cig {
+//                     k = i;
+//                     match cs.cig[k] {
+//                         Cigar::Match(_)
+//                         | Cigar::Del(_)
+//                         | Cigar::RefSkip(_)
+//                         | Cigar::Equal(_)
+//                         | Cigar::Diff(_) => break,
+//                         Cigar::Ins(l) | Cigar::SoftClip(l) => *ipos += l as i32,
+//                         _ => (),
+//                     }
+//                     assert!(cs.icig < n_cig);
+//                     cs.icig = k;
+//                 }
+//             }
+//         }
+//     } else {
+//         let mut op = cs.cig[cs.icig];
+//         // the queried position is not covered by this op
+//         // so we jump to the next one if it exists
+//         if pos - cs.bam_pos >= op.len() {
+//             assert!(cs.icig < cs.cig.len());
+//             op = cs.cig[cs.icig + 1];
+//             // if the next op is anything but clipped, and the current op is also not clipped, then
+//             // increment sequence index/len
+//             //
+//             // this way, if we have CLIP->NON_CLIP or NON_CLIP->CLIP, we avoid adding incrementing
+//             // the seq index by the amount of softclipped bases when we jump to the next op.
+//             match op {
+//                 Cigar::Match(_)
+//                 | Cigar::Del(_)
+//                 | Cigar::RefSkip(_)
+//                 | Cigar::Equal(_)
+//                 | Cigar::Diff(_) => match cs.cig[cs.icig] {
+//                     Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => cs.iseq += l,
+//                     _ => (),
+//                 },
+
+//                 _ => (),
+//             }
+
+//             cs.icig += 1;
+
+//             // =============================================================================
+//             // The next op is a clip of some kind, so increment sequence index by length and
+//             // proceed to find the next non-clip op.
+//             // We do this to avoid incrementing the sequence index with non-existent "bases"
+//             // spanning the clip.
+//             // =============================================================================
+//         } else {
+//             match cs.cig[cs.icig] {
+//                 Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => cs.iseq += l,
+//                 _ => (),
+//             };
+
+//             // we need to find the next non-clip
+//             // we also increment the ref index to account for soft clips
+//             for i in cs.icig + 1..cs.cig.len() {
+//                 k = i;
+//                 match cs.cig[i] {
+//                     Cigar::Match(_)
+//                     | Cigar::Del(_)
+//                     | Cigar::RefSkip(_)
+//                     | Cigar::Equal(_)
+//                     | Cigar::Diff(_) => break, // non-clip found
+//                     Cigar::Ins(l) | Cigar::SoftClip(l) => cs.iseq += l, // no bases, add to
+//                     _ => (),
+//                 }
+//             }
+
+//             cs.icig = k;
+//         }
+//         assert!(cs.icig < cs.cig.len());
+//     }
+
+//     // now to get pileup
+//     let mut op: Cigar;
+//     op = cs.cig[cs.icig];
+
+//     // queried pos is covered by next cig op
+//     if cs.bam_pos + op.len() - 1 == pos && cs.icig + 1 < cs.cig.len() {
+//         let mut next_op = cs.cig[cs.icig + 1];
+
+//         // if next_op == Cigar::Ins(next_op.len()) {
+//         //     // update indel
+//         //     for k in cs.icig + 2..cs.cig.len() {
+//         //         next_op = cs.cig[k];
+//         //         if
+//         //     }
+//         // }
+//     }
+
+//     match op {
+//         Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => {
+//             // update pos
+//         },
+
+//         Cigar::Del(l) | Cigar::RefSkip(l) => {
+
+//         }
+//     }
+
+//     todo!();
+// }
 
 pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResult {
     let cig = &cs.cig;
@@ -61,7 +228,6 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResu
                         _ => (),
                     }
                 }
-
                 return CigarResult::Op(Cigar::Match(len));
             }
 
@@ -120,6 +286,7 @@ impl PileUp {
     pub fn fill_buffer(&mut self) -> Result<read_buf::BufPushResult, Error> {
         let mut ret: read_buf::BufPushResult = read_buf::BufPushResult::DifferentReference;
 
+        // if our first read for the reference
         if self.pos == UNINIT_POS {
             if let Some(next_read) = self.reader.records().next() {
                 let next_read = next_read?;
@@ -137,7 +304,7 @@ impl PileUp {
             let r = rec?;
 
             if r.pos() < prev_pos {
-                panic!("BAD POS!")
+                panic!("UNSORTED BAM!")
             }
 
             prev_pos = r.pos();
@@ -145,9 +312,7 @@ impl PileUp {
             ret = self.rbuf.push(r, self.pos, self.tid);
 
             match ret {
-                read_buf::BufPushResult::AfterWindow => {
-                    break;
-                }
+                read_buf::BufPushResult::AfterWindow => break,
                 read_buf::BufPushResult::DifferentReference => break,
                 _ => (),
             }
@@ -160,8 +325,8 @@ impl PileUp {
         let mut to_remove: VecDeque<usize> = VecDeque::new();
         let mut seq: Vec<u8> = Vec::new();
         let ref_base = match &self.ref_seq {
-            Some(seq) => char::from(seq[self.pos]),
-            None => 'N',
+            Some(seq) => seq[self.pos],
+            None => b'N',
         };
 
         for (i, r) in self.rbuf.rbuf.iter_mut().enumerate() {
@@ -169,7 +334,7 @@ impl PileUp {
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
             match ret {
                 CigarResult::Op(Cigar::Match(_)) => {
-                    seq.push(r.rec.seq()[ipos as usize]);
+                    get_base_pileup(&r.cstate, &r.rec, ipos as u32, self.pos, &mut seq, ref_base);
 
                     nbases += 1;
                 }
@@ -191,11 +356,14 @@ impl PileUp {
             }
         }
 
-        print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos + 1, ref_base, nbases}
+        print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos + 1, char::from(ref_base), nbases + nins + ndel }
         print! {"{}", std::str::from_utf8(&seq)?}
 
         while let Some(i) = to_remove.pop_back() {
             self.rbuf.rbuf.swap_remove(i);
+
+            // using this option slows everything to a crawl: O(n) removal
+            // self.rbuf.rbuf.remove(i);
         }
 
         print! {"\n"}

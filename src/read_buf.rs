@@ -1,5 +1,7 @@
 use rust_htslib::bam::{record::CigarStringView, Record};
 
+pub const CIG_POS_UNINIT: usize = usize::MAX - 1;
+
 pub struct PileUpRecord {
     pub rec: Record,
     pub cstate: CigarState,
