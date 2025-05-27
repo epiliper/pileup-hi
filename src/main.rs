@@ -7,16 +7,18 @@ mod rpileup;
 #[derive(Parser)]
 pub struct Args {
     pub input: String,
+
+    #[arg(short = 'A', default_value_t = false)]
+    pub show_all: bool,
 }
 
 fn main() -> Result<(), Error> {
     let args = Args::parse();
 
-    let mut pileup = rpileup::PileupIterator::new(&args.input, None, None)?;
+    let mut pileup = rpileup::PileupIterator::new(&args.input, args.show_all, None, None)?;
     let mut ret: rpileup::IterResult;
 
     loop {
-        println! {"initializing to ref..."}
         ret = pileup.init_to_ref()?;
 
         match ret {

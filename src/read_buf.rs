@@ -52,14 +52,19 @@ impl ReadBuffer {
         std::cmp::max(0, next_pos - (cur_pos + self.len - 1))
     }
 
+    pub fn next_c(&mut self, pos: i64) -> usize {
+        let pos = pos as usize;
+
+        std::cmp::max(0, pos - self.len - 1)
+    }
+
     pub fn push(&mut self, r: Record, pos: usize, tid: u32) -> BufPushResult {
         if r.is_unmapped() {
             return BufPushResult::Unmapped;
         }
 
         if r.tid() as u32 != tid {
-            let window_start = self.c_to_next_window(r.pos(), pos);
-            return BufPushResult::DifferentReference((r, window_start));
+            return BufPushResult::DifferentReference((r, usize::MAX));
         }
 
         if cigar2rlen(&r) > self.len {
@@ -72,7 +77,6 @@ impl ReadBuffer {
 
         if r.pos() as usize > pos + self.len - 1 {
             let window_start = self.c_to_next_window(r.pos(), pos);
-            // println! {"{} {} {}", pos, window_start, r.pos()}
             return BufPushResult::AfterWindow((r, window_start));
         }
 

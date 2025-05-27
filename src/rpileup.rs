@@ -1,8 +1,9 @@
 use crate::read_buf;
 use crate::read_buf::CigarState;
 use anyhow::{Context, Error};
+use num_cpus;
 use rust_htslib::bam::record::Cigar;
-use rust_htslib::bam::{ext::BamRecordExtensions, HeaderView, Read, Reader, Record};
+use rust_htslib::bam::{ext::BamRecordExtensions, HeaderView, IndexedReader, Read, Record};
 use std::collections::VecDeque;
 
 const UNINIT_POS: usize = usize::MAX - 1;
@@ -22,8 +23,9 @@ pub struct PileupIterator {
     pos: usize,
     next_pos: usize,
     max_pos: usize,
+    show_all: bool,
     rbuf: read_buf::ReadBuffer,
-    reader: Reader,
+    reader: IndexedReader,
     header: HeaderView,
     ref_seq: Option<Vec<u8>>,
     next_record: Option<Record>,
@@ -153,10 +155,16 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> Pileup {
 }
 
 impl PileupIterator {
-    pub fn new(bam_fname: &str, tid: Option<u32>, pos: Option<usize>) -> Result<Self, Error> {
+    pub fn new(
+        bam_fname: &str,
+        show_all: bool,
+        tid: Option<u32>,
+        pos: Option<usize>,
+    ) -> Result<Self, Error> {
         let tid = tid.unwrap_or(UNINIT_TID);
         let pos @ next_pos @ max_pos = pos.unwrap_or(UNINIT_POS);
-        let reader = Reader::from_path(bam_fname)?;
+        let mut reader = IndexedReader::from_path(bam_fname)?;
+        reader.set_threads(num_cpus::get())?;
         let rbuf = read_buf::ReadBuffer::new();
         let header = reader.header().clone();
         let ref_seq = None;
@@ -174,6 +182,7 @@ impl PileupIterator {
             reader,
             header,
             ref_seq,
+            show_all,
             next_record,
             coverage,
             seq_buf,
@@ -200,24 +209,11 @@ impl PileupIterator {
             match ret {
                 read_buf::BufPushResult::AfterWindow((r, next_pos))
                 | read_buf::BufPushResult::DifferentReference((r, next_pos)) => {
-                    self.next_pos = self.pos + next_pos as usize;
+                    self.next_pos = self.pos + next_pos;
                     self.next_record = Some(r);
                     return Ok(());
                 }
                 _ => self.next_record = None,
-            }
-        }
-
-        // if our first read for the reference
-        if self.pos == UNINIT_POS {
-            if let Some(next_read) = self.reader.records().next() {
-                let next_read = next_read?;
-                self.pos = next_read.pos() as usize;
-                self.tid = next_read.tid() as u32;
-                let ret = self.rbuf.push(next_read, self.pos, self.tid);
-                assert!(ret == read_buf::BufPushResult::Pushed);
-            } else {
-                return Ok(());
             }
         }
 
@@ -241,7 +237,6 @@ impl PileupIterator {
 
                 read_buf::BufPushResult::AfterWindow((next_rec, next_pos))
                 | read_buf::BufPushResult::DifferentReference((next_rec, next_pos)) => {
-                    // self.next_pos = next_rec.pos() as usize;
                     self.next_pos = self.pos + next_pos;
                     self.next_record = Some(next_rec);
                     break;
@@ -272,8 +267,9 @@ impl PileupIterator {
         Ok(())
     }
 
-    pub fn set_pileup(&mut self) -> Result<(), Error> {
+    pub fn set_pileup(&mut self) -> Result<bool, Error> {
         assert!(self.remove_buf.is_empty());
+        let mut generated = false;
 
         let mut ndel @ mut nins @ mut nbases = 0;
         let ref_base = match &self.ref_seq {
@@ -321,7 +317,6 @@ impl PileupIterator {
                         self.pos,
                         r.rec.reference_end() - 1
                     );
-                    // to_remove.push_back(i);
                 }
 
                 Pileup::BaseEmpty() => (),
@@ -329,13 +324,16 @@ impl PileupIterator {
             }
         }
 
-        self.write_pileup_str(ref_base, nbases, nins, ndel)?;
+        if nbases + nins + ndel > 0 {
+            self.write_pileup_str(ref_base, nbases, nins, ndel)?;
+            generated = true;
+        }
 
         while let Some(i) = self.remove_buf.pop_back() {
             self.rbuf.rbuf.swap_remove(i);
         }
 
-        Ok(())
+        Ok(generated)
     }
 
     pub fn init_to_ref(&mut self) -> Result<IterResult, Error> {
@@ -351,32 +349,48 @@ impl PileupIterator {
             Ok(IterResult::NoData)
         } else {
             self.max_pos = self.header.target_len(self.tid).context("No ref len")? as usize;
-            self.pos = UNINIT_POS;
-            self.next_pos = UNINIT_POS;
+            // self.pos = UNINIT_POS;
+            // self.next_pos = UNINIT_POS;
+            self.pos = 0;
+            self.next_pos = 0;
+            self.reader.fetch((self.tid, 0, u32::MAX))?;
             Ok(IterResult::Generated)
         }
     }
 
     pub fn next(&mut self) -> Result<IterResult, Error> {
-        if self.pos != UNINIT_POS {
-            if self.pos >= self.max_pos {
-                return Ok(IterResult::ReferenceEnd);
-            } else {
-                self.pos += 1;
-            }
-        }
+        let mut gen = false;
 
-        if self.rbuf.rbuf.is_empty() && self.pos != UNINIT_POS {
-            self.write_pileup_str(b'N', 0, 0, 0)?;
-            return Ok(IterResult::Generated);
-        }
-
+        // if we are at the next position in the bam where reads are within window range,
+        // resume read intake
         if self.pos == self.next_pos {
             let _r = self.fill_buffer();
         }
 
-        self.set_pileup()?;
-        Ok(IterResult::Generated)
+        // if we have reads in buffer, attempt to generate plp.
+        if !self.rbuf.rbuf.is_empty() {
+            gen = self.set_pileup()?;
+        }
+
+        // if no reads in buffer overlapped with pos, print empty plp if enabled
+        if !gen && self.show_all {
+            self.write_pileup_str(b'N', 0, 0, 0)?;
+        }
+
+        if self.next_record.is_none() {
+            return Ok(IterResult::ReferenceEnd);
+        }
+
+        // if we need to print blank plps for each col,
+        // advance query coord by 1
+        // else, jump to the next coord with reads in range
+        if self.show_all {
+            self.pos += 1;
+        } else {
+            self.pos = self.next_pos;
+        }
+
+        return Ok(IterResult::Generated);
     }
 }
 
