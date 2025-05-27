@@ -17,10 +17,9 @@ pub struct ReadBuffer {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum BufPushResult {
-    BeforeWindow,
-    AfterWindow(Record),
+    AfterWindow((Record, usize)),
     Pushed,
-    DifferentReference(Record),
+    DifferentReference((Record, usize)),
     Unmapped,
 }
 
@@ -48,13 +47,19 @@ pub fn cigar2rlen(r: &Record) -> usize {
 }
 
 impl ReadBuffer {
+    pub fn c_to_next_window(&mut self, next_pos: i64, cur_pos: usize) -> usize {
+        let next_pos = next_pos as usize;
+        std::cmp::max(0, next_pos - (cur_pos + self.len - 1))
+    }
+
     pub fn push(&mut self, r: Record, pos: usize, tid: u32) -> BufPushResult {
         if r.is_unmapped() {
             return BufPushResult::Unmapped;
         }
 
         if r.tid() as u32 != tid {
-            return BufPushResult::DifferentReference(r);
+            let window_start = self.c_to_next_window(r.pos(), pos);
+            return BufPushResult::DifferentReference((r, window_start));
         }
 
         if cigar2rlen(&r) > self.len {
@@ -62,12 +67,13 @@ impl ReadBuffer {
         }
 
         if r.pos() as usize + self.len - 1 < pos {
-            panic!();
-            return BufPushResult::BeforeWindow;
+            panic!(); // unsorted
         }
 
         if r.pos() as usize > pos + self.len - 1 {
-            return BufPushResult::AfterWindow(r);
+            let window_start = self.c_to_next_window(r.pos(), pos);
+            // println! {"{} {} {}", pos, window_start, r.pos()}
+            return BufPushResult::AfterWindow((r, window_start));
         }
 
         let cstate = CigarState {

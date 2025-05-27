@@ -1,5 +1,5 @@
 use crate::read_buf;
-use crate::read_buf::{CigarState, CIG_POS_UNINIT};
+use crate::read_buf::CigarState;
 use anyhow::{Context, Error};
 use rust_htslib::bam::record::Cigar;
 use rust_htslib::bam::{ext::BamRecordExtensions, HeaderView, Read, Reader, Record};
@@ -17,9 +17,10 @@ const DELETION: u8 = b'-';
 const F_MATCH: u8 = b'.';
 const R_MATCH: u8 = b',';
 
-pub struct PileUp {
+pub struct PileupIterator {
     tid: u32,
     pos: usize,
+    next_pos: usize,
     rbuf: read_buf::ReadBuffer,
     reader: Reader,
     header: HeaderView,
@@ -35,7 +36,7 @@ pub enum IterResult {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum CigarResult {
+pub enum Pileup {
     BeforePos(),
     Op(Cigar),
     BaseEmpty(),
@@ -77,13 +78,15 @@ pub fn get_base_pileup(
     kstring_buf.push(base);
 }
 
-pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResult {
+pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> Pileup {
     let cig = &cs.cig;
     let ncig = cig.len();
     let mut op: Cigar;
     while cs.bam_pos <= pos {
         if cs.icig >= ncig {
-            return CigarResult::BeforePos();
+            // this should never happen, since we check cigars beforehand to at least end
+            // at the queried coordinate, if not pass over it.
+            return Pileup::BeforePos();
         }
 
         op = cig[cs.icig];
@@ -103,12 +106,12 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResu
                     let next_op = cig[cs.icig + 1];
 
                     match next_op {
-                        Cigar::Ins(_) => return CigarResult::Op(next_op),
-                        Cigar::Del(_) => return CigarResult::Op(next_op),
+                        Cigar::Ins(_) => return Pileup::Op(next_op),
+                        Cigar::Del(_) => return Pileup::Op(next_op),
                         _ => (),
                     }
                 }
-                return CigarResult::Op(Cigar::Match(len));
+                return Pileup::Op(Cigar::Match(len));
             }
 
             Cigar::Ins(len) | Cigar::SoftClip(len) => {
@@ -126,7 +129,7 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResu
                 }
 
                 *ipos -= 1;
-                return CigarResult::Op(op);
+                return Pileup::Op(op);
             }
 
             Cigar::RefSkip(len) => {
@@ -137,19 +140,19 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarResu
                     continue;
                 }
 
-                return CigarResult::BaseEmpty();
+                return Pileup::BaseEmpty();
             }
             _ => (),
         }
     }
 
-    CigarResult::BaseEmpty()
+    Pileup::BaseEmpty()
 }
 
-impl PileUp {
+impl PileupIterator {
     pub fn new(bam_fname: &str, tid: Option<u32>, pos: Option<usize>) -> Result<Self, Error> {
         let tid = tid.unwrap_or(UNINIT_TID);
-        let pos = pos.unwrap_or(UNINIT_POS);
+        let pos @ next_pos = pos.unwrap_or(UNINIT_POS);
         let reader = Reader::from_path(bam_fname)?;
         let rbuf = read_buf::ReadBuffer::new();
         let header = reader.header().clone();
@@ -160,6 +163,7 @@ impl PileUp {
         Ok(Self {
             tid,
             pos,
+            next_pos,
             rbuf,
             reader,
             header,
@@ -169,6 +173,13 @@ impl PileUp {
         })
     }
 
+    /// Read records in to fill a read buffer spanning the current coordinate window.
+    /// This will loop over records until A) a record is found that starts outside the current
+    /// window, (e.g. faraway coord or different reference).
+    ///
+    /// When a read outside the current window is found, the [PileupIterator] will skip buffer
+    /// filling / pileup generation for all coordinates between the current and the next read's
+    /// start position.
     pub fn fill_buffer(&mut self) -> Result<(), Error> {
         let mut ret: read_buf::BufPushResult;
 
@@ -179,8 +190,9 @@ impl PileUp {
             let ret = self.rbuf.push(next_record, self.pos, self.tid);
 
             match ret {
-                read_buf::BufPushResult::AfterWindow(r)
-                | read_buf::BufPushResult::DifferentReference(r) => {
+                read_buf::BufPushResult::AfterWindow((r, next_pos))
+                | read_buf::BufPushResult::DifferentReference((r, next_pos)) => {
+                    self.next_pos = self.pos + next_pos as usize;
                     self.next_record = Some(r);
                     return Ok(());
                 }
@@ -213,21 +225,40 @@ impl PileUp {
             }
 
             prev_pos = r.pos();
-            // println! {"{prev_pos}"}
 
             ret = self.rbuf.push(r, self.pos, self.tid);
 
             match ret {
                 read_buf::BufPushResult::Unmapped => continue,
-                read_buf::BufPushResult::AfterWindow(next_rec)
-                | read_buf::BufPushResult::DifferentReference(next_rec) => {
+
+                read_buf::BufPushResult::AfterWindow((next_rec, next_pos))
+                | read_buf::BufPushResult::DifferentReference((next_rec, next_pos)) => {
+                    // self.next_pos = next_rec.pos() as usize;
+                    self.next_pos = self.pos + next_pos;
                     self.next_record = Some(next_rec);
                     break;
                 }
                 _ => (),
             }
         }
-        // println! {"done reading"};
+        Ok(())
+    }
+
+    pub fn write_pileup_str(
+        &mut self,
+        seq_str: Option<&mut Vec<u8>>,
+        ref_base: u8,
+        nbases: usize,
+        nins: usize,
+        ndel: usize,
+    ) -> Result<(), Error> {
+        print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos + 1, char::from(ref_base), nbases + nins + ndel }
+        if let Some(seq) = seq_str {
+            print! {"{}", std::str::from_utf8(&seq)?}
+        }
+
+        print! {"\n"}
+
         Ok(())
     }
 
@@ -252,21 +283,21 @@ impl PileUp {
             self.coverage += 1;
 
             match ret {
-                CigarResult::Op(Cigar::Match(_)) => {
+                Pileup::Op(Cigar::Match(_)) => {
                     get_base_pileup(&r.cstate, &r.rec, ipos as u32, self.pos, &mut seq, ref_base);
 
                     nbases += 1;
                 }
 
-                CigarResult::Op(Cigar::Ins(_)) => nins += 1,
+                Pileup::Op(Cigar::Ins(_)) => nins += 1,
 
-                CigarResult::Op(Cigar::Del(_)) => {
+                Pileup::Op(Cigar::Del(_)) => {
                     if ipos != -1 {
                         ndel += 1;
                     }
                 }
 
-                CigarResult::BeforePos() => {
+                Pileup::BeforePos() => {
                     panic!(
                         "{} {} {}",
                         r.rec.is_unmapped(),
@@ -276,22 +307,21 @@ impl PileUp {
                     to_remove.push_back(i);
                 }
 
-                CigarResult::BaseEmpty() => (),
+                Pileup::BaseEmpty() => (),
                 _ => panic!(),
             }
         }
 
-        print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos + 1, char::from(ref_base), nbases + nins + ndel }
-        print! {"{}", std::str::from_utf8(&seq)?}
+        self.write_pileup_str(Some(&mut seq), ref_base, nbases, nins, ndel)?;
+
+        //         print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos + 1, char::from(ref_base), nbases + nins + ndel }
+        //         print! {"{}", std::str::from_utf8(&seq)?}
 
         while let Some(i) = to_remove.pop_back() {
             self.rbuf.rbuf.swap_remove(i);
-
-            // using this option slows everything to a crawl: O(n) removal
-            // self.rbuf.rbuf.remove(i);
         }
 
-        print! {"\n"}
+        // print! {"\n"}
 
         Ok(())
     }
@@ -305,12 +335,17 @@ impl PileUp {
             self.tid = 0;
         }
 
+        if self.pos == self.next_pos {
+            let _r = self.fill_buffer();
+        }
+
         let ref_len = self.header.target_len(self.tid).context("no ref len")? as usize;
 
         // reached end of reference, so increment tid
         if self.pos != UNINIT_POS && self.pos >= ref_len {
             self.tid += 1;
             self.pos = UNINIT_POS;
+            self.next_pos = UNINIT_POS;
 
             if self.header.target_count() > self.tid {
                 // no more references
@@ -320,7 +355,7 @@ impl PileUp {
                 return Ok(IterResult::ReferenceEnd);
             }
         }
-        let _r = self.fill_buffer();
+        // let _r = self.fill_buffer();
         self.set_pileup()?;
         Ok(IterResult::Generated)
     }
@@ -359,9 +394,9 @@ mod tests {
         };
 
         let mut ret = cigar_get_pos(&mut cstate, 4, &mut ipos);
-        assert_eq!(ret, CigarResult::Op(Cigar::Match(4)));
+        assert_eq!(ret, Pileup::Op(Cigar::Match(4)));
         ret = cigar_get_pos(&mut cstate, 5, &mut ipos);
-        assert_eq!(ret, CigarResult::Op(Cigar::Match(1)))
+        assert_eq!(ret, Pileup::Op(Cigar::Match(1)))
     }
 
     #[test]
@@ -391,12 +426,12 @@ mod tests {
         };
 
         let mut ret = cigar_get_pos(&mut cstate, 107, &mut ipos);
-        assert_eq!(ret, CigarResult::Op(Cigar::Match(4)));
+        assert_eq!(ret, Pileup::Op(Cigar::Match(4)));
 
         ret = cigar_get_pos(&mut cstate, 108, &mut ipos);
-        assert_eq!(ret, CigarResult::Op(Cigar::Ins(2)));
+        assert_eq!(ret, Pileup::Op(Cigar::Ins(2)));
 
         ret = cigar_get_pos(&mut cstate, 109, &mut ipos);
-        assert_eq!(ret, CigarResult::Op(Cigar::Match(3)));
+        assert_eq!(ret, Pileup::Op(Cigar::Match(3)));
     }
 }

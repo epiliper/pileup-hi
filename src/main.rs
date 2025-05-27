@@ -12,7 +12,7 @@ pub struct Args {
 fn main() -> Result<(), Error> {
     let args = Args::parse();
 
-    let mut pileup = rpileup::PileUp::new(&args.input, None, None)?;
+    let mut pileup = rpileup::PileupIterator::new(&args.input, None, None)?;
     let mut ret: rpileup::IterResult;
     loop {
         ret = pileup.next()?;
