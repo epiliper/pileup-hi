@@ -199,10 +199,12 @@ impl PileupIterator {
     /// start position.
     pub fn fill_buffer(&mut self) -> Result<(), Error> {
         let mut ret: read_buf::BufPushResult;
+        let mut scanned = 0;
 
         let mut prev_pos = i64::MIN;
 
         if let Some(next_record) = self.next_record.take() {
+            scanned += 1;
             prev_pos = next_record.pos();
             let ret = self.rbuf.push(next_record, self.pos, self.tid);
 
@@ -219,6 +221,7 @@ impl PileupIterator {
 
         for rec in self.reader.records() {
             let r = rec?;
+            scanned += 1;
 
             if r.is_unmapped() {
                 continue;
@@ -241,9 +244,16 @@ impl PileupIterator {
                     self.next_record = Some(next_rec);
                     break;
                 }
-                _ => (),
+                read_buf::BufPushResult::Pushed => scanned += 1,
             }
         }
+
+        // if we have no reads at all to set next pos, assume
+        // we've hit the end of the reference, and set next pos to MAX
+        if scanned == 0 {
+            self.next_pos = usize::MAX;
+        }
+
         Ok(())
     }
 
@@ -359,6 +369,10 @@ impl PileupIterator {
     }
 
     pub fn next(&mut self) -> Result<IterResult, Error> {
+        if self.pos >= self.max_pos {
+            return Ok(IterResult::ReferenceEnd);
+        }
+
         let mut gen = false;
 
         // if we are at the next position in the bam where reads are within window range,
@@ -377,9 +391,9 @@ impl PileupIterator {
             self.write_pileup_str(b'N', 0, 0, 0)?;
         }
 
-        if self.next_record.is_none() && self.rbuf.rbuf.is_empty() {
-            return Ok(IterResult::ReferenceEnd);
-        }
+        // if self.next_record.is_none() && self.rbuf.rbuf.is_empty() {
+        //     return Ok(IterResult::ReferenceEnd);
+        // }
 
         // if we need to print blank plps for each col,
         // advance query coord by 1
