@@ -31,6 +31,7 @@ pub struct PileupIterator {
     next_record: Option<Record>,
     coverage: u32,
     seq_buf: Vec<u8>,
+    qual_buf: Vec<u8>,
     remove_buf: VecDeque<usize>,
 }
 
@@ -52,19 +53,21 @@ pub fn get_base_pileup(
     r: &Record,
     ipos: u32,
     pos: usize,
-    kstring_buf: &mut Vec<u8>,
+    seq_buf: &mut Vec<u8>,
+    qual_buf: &mut Vec<u8>,
     ref_base: u8,
 ) {
     let ipos = ipos as usize;
-    let iseq = cs.iseq as usize;
     let bam_pos = cs.bam_pos as usize;
 
     if pos == r.reference_end() as usize - 1 {
-        kstring_buf.push(LAST_POS);
+        seq_buf.push(LAST_POS);
+        seq_buf.push(r.mapq() + 33);
     }
 
     if pos == bam_pos {
-        kstring_buf.push(FIRST_POS)
+        seq_buf.push(FIRST_POS);
+        seq_buf.push(r.mapq() + 33);
     }
 
     let cur_base = r.seq()[ipos];
@@ -80,7 +83,10 @@ pub fn get_base_pileup(
         }
     };
 
-    kstring_buf.push(base);
+    let cur_qual = r.qual()[ipos] + 33;
+
+    seq_buf.push(base);
+    qual_buf.push(cur_qual);
 }
 
 pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> Pileup {
@@ -171,7 +177,7 @@ impl PileupIterator {
         let next_record = None;
         let coverage = 0;
         let remove_buf = VecDeque::with_capacity(500);
-        let seq_buf = Vec::with_capacity(500);
+        let (seq_buf, qual_buf) = (Vec::with_capacity(500), Vec::with_capacity(500));
 
         Ok(Self {
             tid,
@@ -186,6 +192,7 @@ impl PileupIterator {
             next_record,
             coverage,
             seq_buf,
+            qual_buf,
             remove_buf,
         })
     }
@@ -266,10 +273,17 @@ impl PileupIterator {
     ) -> Result<(), Error> {
         print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid))?, self.pos + 1, char::from(ref_base), nbases + nins + ndel }
         if self.seq_buf.is_empty() {
-            print! {"*"}
+            print! {"*\t"}
         } else {
-            print! {"{}", std::str::from_utf8(&self.seq_buf)?}
+            print! {"{}\t", std::str::from_utf8(&self.seq_buf)?}
             self.seq_buf.clear();
+        }
+
+        if self.qual_buf.is_empty() {
+            print! {"*\t"}
+        } else {
+            print! {"{}\t", std::str::from_utf8(&self.qual_buf)?}
+            self.qual_buf.clear();
         }
 
         print! {"\n"}
@@ -306,6 +320,7 @@ impl PileupIterator {
                         ipos as u32,
                         self.pos,
                         &mut self.seq_buf,
+                        &mut self.qual_buf,
                         ref_base,
                     );
 
