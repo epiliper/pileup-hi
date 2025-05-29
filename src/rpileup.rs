@@ -46,6 +46,24 @@ pub enum CigarAtPos {
     BaseEmpty(),
 }
 
+pub fn get_base_to_ref(cur_base: u8, ref_base: u8, is_reverse: bool) -> u8 {
+    let mut base: u8;
+    if ref_base != cur_base {
+        base = cur_base;
+        if is_reverse {
+            base.make_ascii_lowercase();
+        }
+    } else {
+        if is_reverse {
+            base = R_MATCH;
+        } else {
+            base = F_MATCH;
+        }
+    };
+
+    base
+}
+
 pub fn get_base_pileup(
     cs: &CigarState,
     r: &Record,
@@ -60,7 +78,6 @@ pub fn get_base_pileup(
 
     if pos == r.reference_end() as usize - 1 {
         seq_buf.push(LAST_POS);
-        seq_buf.push(r.mapq() + 33);
     }
 
     if pos == bam_pos {
@@ -70,20 +87,7 @@ pub fn get_base_pileup(
 
     let cur_base = r.seq()[ipos];
 
-    let mut base: u8;
-
-    if ref_base != cur_base {
-        base = cur_base;
-        if r.is_reverse() {
-            base.make_ascii_lowercase();
-        }
-    } else {
-        if r.is_reverse() {
-            base = R_MATCH;
-        } else {
-            base = F_MATCH;
-        }
-    };
+    let base = get_base_to_ref(cur_base, ref_base, r.is_reverse());
 
     let cur_qual = r.qual()[ipos] + 33;
 
@@ -120,7 +124,9 @@ pub fn write_ins(
                 write!(seq_buf, "+{}", l)?;
                 let (s, e) = (ipos as usize, (ipos + l) as usize);
                 for i in s..e {
-                    seq_buf.push(r.seq()[i]);
+                    let base = get_base_to_ref(r.seq()[i], b'.', r.is_reverse());
+                    seq_buf.push(base);
+                    // seq_buf.push(r.seq()[i]);
                     qual_buf.push(r.qual()[i]);
                 }
             }
