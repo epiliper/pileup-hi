@@ -390,11 +390,11 @@ impl PileupIterator {
                 CigarAtPos::Op(Cigar::Del(l)) => {
                     if ipos != -1 {
                         write_del(self.pos, &mut self.seq_buf, l as usize)?;
-                        ndel += 1;
                         r.indel -= l;
                     } else {
                         self.seq_buf.push(b'*');
                     }
+                    ndel += 1;
                 }
 
                 CigarAtPos::BeforePos() => {
