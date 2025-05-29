@@ -1,6 +1,7 @@
 use anyhow::Error;
 use clap::Parser;
 
+mod pileup;
 mod read_buf;
 mod rpileup;
 
