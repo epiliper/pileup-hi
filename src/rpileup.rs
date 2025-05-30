@@ -1,3 +1,4 @@
+use crate::params::Params;
 use crate::pileup::CigarState;
 use crate::read_buf;
 use anyhow::{Context, Error};
@@ -31,6 +32,7 @@ pub struct PileupIterator {
     seq_buf: Vec<u8>,
     qual_buf: Vec<u8>,
     remove_buf: VecDeque<usize>,
+    cur_rec: Record,
 }
 
 pub enum IterResult {
@@ -109,7 +111,6 @@ pub fn write_ins(
     ipos: u32,
     seq_buf: &mut Vec<u8>,
     qual_buf: &mut Vec<u8>,
-    cur_base_is_del: bool,
 ) -> Result<(), Error> {
     let mut k = cs.icig + 1;
     let ncig = cs.cig.len();
@@ -126,7 +127,6 @@ pub fn write_ins(
                 for i in s..e {
                     let base = get_base_to_ref(r.seq()[i], b'.', r.is_reverse());
                     seq_buf.push(base);
-                    // seq_buf.push(r.seq()[i]);
                     qual_buf.push(r.qual()[i]);
                 }
             }
@@ -214,23 +214,20 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarAtPo
 }
 
 impl PileupIterator {
-    pub fn new(
-        bam_fname: &str,
-        show_all: bool,
-        tid: Option<u32>,
-        pos: Option<usize>,
-    ) -> Result<Self, Error> {
-        let tid = tid.unwrap_or(UNINIT_TID);
-        let pos @ next_pos @ max_pos = pos.unwrap_or(UNINIT_POS);
-        let mut reader = IndexedReader::from_path(bam_fname)?;
+    pub fn new(params: Params) -> Result<Self, Error> {
+        let tid = params.inp.tid.unwrap_or(UNINIT_TID);
+        let pos @ next_pos @ max_pos = params.inp.pos.unwrap_or(UNINIT_POS);
+        let mut reader = IndexedReader::from_path(params.inp.input)?;
         reader.set_threads(num_cpus::get())?;
         let rbuf = read_buf::ReadBuffer::new();
         let header = reader.header().clone();
         let ref_seq = None;
         let next_record = None;
         let coverage = 0;
+        let show_all = params.plp.show_empty_coords;
         let remove_buf = VecDeque::with_capacity(500);
         let (seq_buf, qual_buf) = (Vec::with_capacity(500), Vec::with_capacity(500));
+        let cur_rec = Record::new();
 
         Ok(Self {
             tid,
@@ -247,6 +244,7 @@ impl PileupIterator {
             seq_buf,
             qual_buf,
             remove_buf,
+            cur_rec,
         })
     }
 
@@ -259,31 +257,31 @@ impl PileupIterator {
     /// start position.
     pub fn fill_buffer(&mut self) -> Result<(), Error> {
         let mut ret: read_buf::BufPushResult;
-        let mut scanned = 0;
+        // let mut scanned = 0;
 
         let mut prev_pos = i64::MIN;
 
-        if let Some(next_record) = self.next_record.take() {
-            scanned += 1;
-            prev_pos = next_record.pos();
-            let ret = self.rbuf.push(next_record, self.pos, self.tid);
-
-            match ret {
-                read_buf::BufPushResult::AfterWindow((r, next_pos))
-                | read_buf::BufPushResult::DifferentReference((r, next_pos)) => {
-                    self.next_pos = self.pos + next_pos;
-                    self.next_record = Some(r);
-                    return Ok(());
-                }
-                _ => self.next_record = None,
+        if self.cur_rec.tid() == -1 {
+            if let Some(rec) = self.reader.read(&mut self.cur_rec) {
+                rec?;
+            } else {
+                // if we have no reads at all to set next pos, assume
+                // we've hit the end of the reference, and set next pos to MAX
+                self.next_pos = usize::MAX;
+                return Ok(());
             }
         }
 
-        for rec in self.reader.records() {
-            let r = rec?;
-            scanned += 1;
+        loop {
+            if self.cur_rec.tid() == -1 {
+                break;
+            }
+
+            // scanned += 1;
+            let r = &self.cur_rec;
 
             if r.is_unmapped() {
+                self.reader.read(&mut self.cur_rec);
                 continue;
             }
 
@@ -293,25 +291,28 @@ impl PileupIterator {
 
             prev_pos = r.pos();
 
-            ret = self.rbuf.push(r, self.pos, self.tid);
+            ret = self.rbuf.attempt_push(&r, self.pos, self.tid);
 
             match ret {
-                read_buf::BufPushResult::Unmapped => continue,
+                read_buf::BufPushResult::Unmapped => panic!(),
 
-                read_buf::BufPushResult::AfterWindow((next_rec, next_pos))
-                | read_buf::BufPushResult::DifferentReference((next_rec, next_pos)) => {
+                read_buf::BufPushResult::AfterWindow(next_pos) => {
                     self.next_pos = self.pos + next_pos;
-                    self.next_record = Some(next_rec);
                     break;
                 }
-                read_buf::BufPushResult::Pushed => scanned += 1,
-            }
-        }
 
-        // if we have no reads at all to set next pos, assume
-        // we've hit the end of the reference, and set next pos to MAX
-        if scanned == 0 {
-            self.next_pos = usize::MAX;
+                read_buf::BufPushResult::DifferentReference => {
+                    break;
+                }
+                read_buf::BufPushResult::Pushed => {
+                    self.cur_rec.set_tid(-1);
+                    match self.reader.read(&mut self.cur_rec) {
+                        Some(Ok(_)) => continue,
+                        None => break,
+                        Some(Err(_)) => panic!(),
+                    }
+                }
+            };
         }
 
         Ok(())
@@ -389,7 +390,6 @@ impl PileupIterator {
                         ipos as u32,
                         &mut self.seq_buf,
                         &mut self.qual_buf,
-                        true,
                     )?;
                 }
 
@@ -459,7 +459,7 @@ impl PileupIterator {
         // if we are at the next position in the bam where reads are within window range,
         // resume read intake
         if self.pos == self.next_pos {
-            let _r = self.fill_buffer();
+            self.fill_buffer()?;
         }
 
         // if we have reads in buffer, attempt to generate plp.

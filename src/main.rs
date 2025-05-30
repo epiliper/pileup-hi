@@ -1,22 +1,16 @@
+use crate::params::Params;
 use anyhow::Error;
 use clap::Parser;
 
+mod params;
 mod pileup;
 mod read_buf;
 mod rpileup;
 
-#[derive(Parser)]
-pub struct Args {
-    pub input: String,
-
-    #[arg(short = 'A', default_value_t = false)]
-    pub show_all: bool,
-}
-
 fn main() -> Result<(), Error> {
-    let args = Args::parse();
+    let params = Params::parse();
 
-    let mut pileup = rpileup::PileupIterator::new(&args.input, args.show_all, None, None)?;
+    let mut pileup = rpileup::PileupIterator::new(params)?;
     let mut ret: rpileup::IterResult;
 
     loop {
