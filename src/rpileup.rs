@@ -36,6 +36,7 @@ pub struct PileupIterator {
     remove_buf: VecDeque<usize>,
     read_filter: ReadFilter,
     cur_rec: Record,
+    min_baseq: u8,
 }
 
 pub enum IterResult {
@@ -245,9 +246,11 @@ impl PileupIterator {
         let (seq_buf, qual_buf) = (Vec::with_capacity(500), Vec::with_capacity(500));
         let cur_rec = Record::new();
         let mut refseq = None;
+        let min_baseq = params.plp.min_baseq;
 
-        let mut read_filter = ReadFilter::new(
+        let read_filter = ReadFilter::new(
             params.plp.min_mapq,
+            params.plp.count_orphans,
             params.plp.excl_flags.iter().map(|s| s.as_str()).collect(),
             params.plp.incl_flags.iter().map(|s| s.as_str()).collect(),
         )?;
@@ -265,6 +268,7 @@ impl PileupIterator {
             reader,
             header,
             ref_seq,
+            min_baseq,
             read_filter,
             show_all,
             refseq,
@@ -397,6 +401,10 @@ impl PileupIterator {
             let mut ipos: i32 = -1;
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
             self.coverage += 1;
+
+            if ipos != -1 && r.rec.qual()[ipos as usize] < self.min_baseq {
+                continue;
+            }
 
             match ret {
                 CigarAtPos::Op(Cigar::Match(_)) => {

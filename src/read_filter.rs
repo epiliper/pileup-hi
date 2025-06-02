@@ -1,5 +1,5 @@
 use anyhow::Error;
-use rust_htslib::bam::{ext::BamRecordExtensions, Record};
+use rust_htslib::bam::Record;
 
 const BAM_FPAIRED: u16 = 1;
 const BAM_FPROPER_PAIR: u16 = 2;
@@ -41,11 +41,16 @@ fn add_to_flag(flags: Vec<&str>, flag: &mut u16) -> Result<(), Error> {
 }
 
 impl ReadFilter {
-    pub fn new(min_mapq: u8, excl_flags: Vec<&str>, incl_flags: Vec<&str>) -> Result<Self, Error> {
+    pub fn new(
+        min_mapq: u8,
+        count_orphans: bool,
+        excl_flags: Vec<&str>,
+        incl_flags: Vec<&str>,
+    ) -> Result<Self, Error> {
         let mut s = Self {
             inc_flag: 0,
             exc_flag: 0,
-            count_orphans: false,
+            count_orphans,
             min_mapq: 0,
         };
 
@@ -78,7 +83,7 @@ impl ReadFilter {
             return false;
         }
 
-        if read.mapq() < self.min_mapq + 33 {
+        if read.mapq() < self.min_mapq {
             return false;
         }
 
