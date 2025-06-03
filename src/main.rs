@@ -4,6 +4,8 @@ use anyhow::Error;
 mod overlap;
 mod params;
 mod pileup;
+mod plp_iter;
+mod plp_writers;
 mod read_buf;
 mod read_filter;
 mod refseq;
@@ -12,7 +14,8 @@ mod rpileup;
 fn _main() -> Result<(), Error> {
     let params = parse_or_quit();
 
-    let mut pileup = rpileup::PileupIterator::new(params)?;
+    // let mut pileup = rpileup::PileupIterator::new(params)?;
+    let mut pileup = plp_iter::PileupIterator::new(params)?;
     let mut ret: rpileup::IterResult;
 
     loop {

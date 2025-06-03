@@ -3,6 +3,7 @@ use rust_htslib::bam::{
     Record,
 };
 
+#[derive(Debug)]
 pub struct CigarState {
     pub cig: CigarStringView,
     pub icig: usize,  // position in cigar string
@@ -10,6 +11,7 @@ pub struct CigarState {
     pub bam_pos: u32, // ref coord of first base
 }
 
+#[derive(Debug)]
 pub struct PileUp {
     pub rec: Record,
     pub cstate: CigarState,

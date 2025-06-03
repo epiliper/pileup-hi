@@ -1,25 +1,33 @@
 #![allow(dead_code)]
+use crate::pileup::PileUp;
 use anyhow::Error;
 use rust_htslib::bam::{ext::BamRecordExtensions, Record};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::slice;
+use std::{cell::RefCell, rc::Rc};
 
-pub type OverlapMap = HashMap<u64, Record>;
+pub type OverlapMap = HashMap<u64, Rc<RefCell<PileUp>>>;
 
 pub trait MapOverlaps {
-    fn push(&mut self, r: Record) -> Option<Record>;
+    fn push(&mut self, r: PileUp) -> OverlapInsertResult;
     fn remove(&mut self, r: &Record);
 }
 
+pub enum OverlapInsertResult {
+    Inserted(Rc<RefCell<PileUp>>),
+    Rejected(PileUp),
+}
+
 impl MapOverlaps for OverlapMap {
-    fn push(&mut self, r: Record) -> Option<Record> {
+    fn push(&mut self, plp: PileUp) -> OverlapInsertResult {
+        let r = &plp.rec;
         if r.is_mate_unmapped() || r.is_proper_pair() {
-            return Some(r);
+            return OverlapInsertResult::Rejected(plp);
         }
 
         if r.mtid() != 1 && (r.mtid() != r.tid()) {
-            return Some(r);
+            return OverlapInsertResult::Rejected(plp);
         }
 
         if r.pos() > r.mpos() || r.is_paired() && r.mpos() == -1 {
@@ -27,10 +35,12 @@ impl MapOverlaps for OverlapMap {
             let mut hasher = DefaultHasher::new();
             r.qname().hash(&mut hasher);
             let h = hasher.finish();
-            self.insert(h, r).unwrap();
-            None
+            self.insert(h, Rc::new(RefCell::new(plp))).unwrap();
+
+            let ret = self.get_mut(&h).unwrap();
+            OverlapInsertResult::Inserted(Rc::clone(ret))
         } else {
-            Some(r)
+            OverlapInsertResult::Rejected(plp)
         }
     }
 
