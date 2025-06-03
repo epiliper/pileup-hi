@@ -1,9 +1,46 @@
 #![allow(dead_code)]
-
 use anyhow::Error;
 use rust_htslib::bam::{ext::BamRecordExtensions, Record};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::slice;
+
+pub type OverlapMap = HashMap<u64, Record>;
+
+pub trait MapOverlaps {
+    fn push(&mut self, r: Record) -> Option<Record>;
+    fn remove(&mut self, r: &Record);
+}
+
+impl MapOverlaps for OverlapMap {
+    fn push(&mut self, r: Record) -> Option<Record> {
+        if r.is_mate_unmapped() || r.is_proper_pair() {
+            return Some(r);
+        }
+
+        if r.mtid() != 1 && (r.mtid() != r.tid()) {
+            return Some(r);
+        }
+
+        if r.pos() > r.mpos() || r.is_paired() && r.mpos() == -1 {
+            // criteria passed, insert
+            let mut hasher = DefaultHasher::new();
+            r.qname().hash(&mut hasher);
+            let h = hasher.finish();
+            self.insert(h, r).unwrap();
+            None
+        } else {
+            Some(r)
+        }
+    }
+
+    fn remove(&mut self, r: &Record) {
+        let mut hasher = DefaultHasher::new();
+        r.qname().hash(&mut hasher);
+        let h = hasher.finish();
+        self.remove(&h);
+    }
+}
 
 /// this is just a modified version of [Record::qual] that returns a mutable slice to the qual
 /// array.
@@ -179,6 +216,7 @@ mod tests {
         assert_eq!(record.qual()[0], 0);
     }
 
+    #[test]
     pub fn qual_set_test2() {
         let mut record = Record::new();
         record.set(
@@ -197,5 +235,22 @@ mod tests {
 
         set_qual(&mut record, 8, 4).unwrap();
         assert_eq!(record.qual()[8], 4);
+    }
+
+    #[test]
+    pub fn qual_set_bounds_check() {
+        let mut record = Record::new();
+        record.set(
+            b"read2",
+            Some(&CigarString(vec![
+                Cigar::Match(4),
+                Cigar::Ins(5),
+                Cigar::Match(3),
+            ])),
+            b"AAAAGAAAAAAA",
+            b"############",
+        );
+
+        assert!(set_qual(&mut record, 12, 8).is_err());
     }
 }

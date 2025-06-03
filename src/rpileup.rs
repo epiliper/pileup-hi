@@ -1,3 +1,4 @@
+use crate::overlap::OverlapMap;
 use crate::params::Params;
 use crate::pileup::CigarState;
 use crate::read_buf;
@@ -33,6 +34,7 @@ pub struct PileupIterator {
     qual_buf: Vec<u8>,
     remove_buf: VecDeque<usize>,
     read_filter: ReadFilter,
+    overlap_map: Option<OverlapMap>,
     cur_rec: Record,
     min_baseq: u8,
 }
@@ -101,7 +103,6 @@ pub fn write_match(
 
     let base = get_base_to_ref(cur_base, pos as u64, refseq, r.is_reverse())?;
 
-    // let cur_qual = r.qual()[ipos] + 33;
     let cur_qual = r.qual()[ipos] + 33;
 
     seq_buf.push(base);
@@ -257,6 +258,11 @@ impl PileupIterator {
             refseq = Some(RefSeq::from_file(ref_file)?);
         }
 
+        let overlap_map = match params.plp.disable_overlap {
+            true => None,
+            false => Some(OverlapMap::new()),
+        };
+
         Ok(Self {
             tid,
             pos,
@@ -265,6 +271,7 @@ impl PileupIterator {
             rbuf,
             reader,
             header,
+            overlap_map,
             min_baseq,
             read_filter,
             show_all,
