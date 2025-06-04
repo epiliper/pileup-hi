@@ -4,6 +4,7 @@ use rust_htslib::bam::Record;
 pub struct ReadBuffer {
     pub rbuf: Vec<PileUp>,
     pub len: usize,
+    pub backup_buf: Vec<PileUp>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -59,8 +60,18 @@ impl ReadBuffer {
 
     pub fn new() -> Self {
         let rbuf: Vec<PileUp> = Vec::with_capacity(500);
+        let backup_buf: Vec<PileUp> = Vec::with_capacity(500);
         let len = 0;
 
-        Self { rbuf, len }
+        Self {
+            rbuf,
+            backup_buf,
+            len,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        assert!(self.rbuf.is_empty());
+        std::mem::swap(&mut self.rbuf, &mut self.backup_buf);
     }
 }

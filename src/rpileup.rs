@@ -1,4 +1,3 @@
-use crate::overlap::OverlapMap;
 use crate::params::Params;
 use crate::pileup::CigarState;
 use crate::read_buf;
@@ -8,7 +7,6 @@ use anyhow::{Context, Error};
 use num_cpus;
 use rust_htslib::bam::record::Cigar;
 use rust_htslib::bam::{ext::BamRecordExtensions, HeaderView, IndexedReader, Read, Record};
-use std::collections::VecDeque;
 use std::io::Write;
 
 const UNINIT_POS: usize = usize::MAX - 1;
@@ -32,9 +30,7 @@ pub struct PileupIterator {
     refseq: Option<RefSeq>,
     seq_buf: Vec<u8>,
     qual_buf: Vec<u8>,
-    remove_buf: VecDeque<usize>,
     read_filter: ReadFilter,
-    overlap_map: Option<OverlapMap>,
     cur_rec: Record,
     min_baseq: u8,
 }
@@ -146,7 +142,7 @@ pub fn write_ins(
                 for i in s..e {
                     let base = get_base(r.seq()[i], r.is_reverse());
                     seq_buf.push(base);
-                    qual_buf.push(r.qual()[i]);
+                    qual_buf.push(r.qual()[i] + 33);
                 }
             }
 
@@ -241,7 +237,6 @@ impl PileupIterator {
         let rbuf = read_buf::ReadBuffer::new();
         let header = reader.header().clone();
         let show_all = params.plp.show_empty_coords;
-        let remove_buf = VecDeque::with_capacity(500);
         let (seq_buf, qual_buf) = (Vec::with_capacity(500), Vec::with_capacity(500));
         let cur_rec = Record::new();
         let mut refseq = None;
@@ -258,11 +253,6 @@ impl PileupIterator {
             refseq = Some(RefSeq::from_file(ref_file)?);
         }
 
-        let overlap_map = match params.plp.disable_overlap {
-            true => None,
-            false => Some(OverlapMap::new()),
-        };
-
         Ok(Self {
             tid,
             pos,
@@ -271,14 +261,12 @@ impl PileupIterator {
             rbuf,
             reader,
             header,
-            overlap_map,
             min_baseq,
             read_filter,
             show_all,
             refseq,
             seq_buf,
             qual_buf,
-            remove_buf,
             cur_rec,
         })
     }
@@ -389,7 +377,7 @@ impl PileupIterator {
     }
 
     pub fn set_pileup(&mut self) -> Result<bool, Error> {
-        assert!(self.remove_buf.is_empty());
+        assert!(self.rbuf.backup_buf.is_empty());
         let mut generated = false;
 
         let mut ndel @ mut nins @ mut nbases = 0;
@@ -398,9 +386,8 @@ impl PileupIterator {
             None => b'N',
         };
 
-        for (i, r) in self.rbuf.rbuf.iter_mut().enumerate() {
+        for mut r in self.rbuf.rbuf.drain(..) {
             if r.rec.reference_end() - 1 < self.pos as i64 {
-                self.remove_buf.push_back(i);
                 continue;
             }
 
@@ -408,6 +395,7 @@ impl PileupIterator {
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
 
             if ipos != -1 && r.rec.qual()[ipos as usize] < self.min_baseq {
+                self.rbuf.backup_buf.push(r);
                 continue;
             }
 
@@ -460,6 +448,8 @@ impl PileupIterator {
                 CigarAtPos::BaseEmpty() => (),
                 _ => panic!(),
             }
+
+            self.rbuf.backup_buf.push(r);
         }
 
         if nbases + nins + ndel > 0 {
@@ -467,9 +457,7 @@ impl PileupIterator {
             generated = true;
         }
 
-        while let Some(i) = self.remove_buf.pop_back() {
-            self.rbuf.rbuf.swap_remove(i);
-        }
+        self.rbuf.reset();
 
         Ok(generated)
     }
