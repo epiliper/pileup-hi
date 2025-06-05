@@ -5,7 +5,7 @@ use rust_htslib::bam::{ext::BamRecordExtensions, Record};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::slice;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
 pub type OverlapMap = HashMap<u64, Rc<RefCell<PileUp>>>;
 
@@ -39,7 +39,7 @@ impl MapOverlaps for OverlapMap {
         }
 
         if let Some(mate) = self.get_mut(&h) {
-            // tweak_overlap_qual(&mut mate.borrow_mut().rec, &mut r).unwrap();
+            tweak_overlap_qual(&mut mate.borrow_mut().rec, &mut r).unwrap();
             self.delete_hash(h);
             return;
         }
@@ -109,11 +109,15 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
 
     // we use [Record::aligned_pairs_full] to also retrieve deletion bases, for which we also adjust quality
     // (treated the same as mismatches)
-    let ap = a
+    let mut ap = a
         .aligned_pairs_full()
-        .map(|x| (x[0].map(|x| x as usize), x[1]));
+        .map(|x| (x[0].map(|x| x as usize), x[1]))
+        .peekable();
 
-    let bp = b.aligned_pairs();
+    let mut bp = b
+        .aligned_pairs_full()
+        .map(|x| (x[0].map(|x| x as usize), x[1]))
+        .peekable();
 
     // for now: using htslib's hashing heuristic to decide which read to modify, bound to change
     // (maybe)
@@ -122,90 +126,103 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
         false => (amul, bmul) = (false, true),
     }
 
-    let bhash: HashMap<i64, usize> =
-        HashMap::from_iter(bp.into_iter().map(|x| (x[1], x[0] as usize)));
+    loop {
+        match (ap.peek(), bp.peek()) {
+            (Some((aread, aref)), Some((bread, bref))) => match (aread, aref, bread, bref) {
+                (_, None, _, None) => _ = (ap.next(), bp.next()), // both with insertion
+                (_, _, _, None) => _ = bp.next(),                 // b has an insertion at this base
+                (_, None, _, _) => _ = ap.next(),                 // a has an insertion at this base
 
-    for (read_pos, ref_pos) in ap {
-        if let Some(rp) = ref_pos {
-            // read a has a deletion relative to read b
-            if read_pos.is_none() && bhash.contains_key(&rp) {
-                let bpos = *bhash.get(&rp).unwrap();
-
-                // set qual accordingly
-                if bmul {
-                    new_qual = (b.qual()[bpos] as f32 * 0.8) as u8;
-                } else {
-                    new_qual = 0;
-                }
-
-                set_qual(b, bpos, new_qual)?;
-                continue;
-            }
-            // read A has a base at this ref position
-            if let Some(read_pos) = read_pos {
-                // both reads have bases at the given reference position
-                if let Some(other_read_pos) = bhash.get(&rp) {
-                    let (read_pos, other_read_pos) = (read_pos, *other_read_pos);
-                    (base_a, base_b) = (a.seq()[read_pos], b.seq()[other_read_pos]);
-
-                    // both bases match :)
-                    if base_a == base_b {
-                        new_qual = a.qual()[read_pos].wrapping_add(b.qual()[other_read_pos]);
-
-                        // set quals accordingly
-                        if amul {
-                            set_qual(a, read_pos, new_qual)?;
-                            set_qual(b, other_read_pos, 0)?;
-                        } else {
-                            set_qual(a, read_pos, 0)?;
-                            set_qual(b, other_read_pos, new_qual)?;
-                        }
-                    } else {
-                        // bases are a mismatch :(
-                        match a.qual()[read_pos].cmp(&b.qual()[other_read_pos]) {
-                            // higher confidence in A
-                            std::cmp::Ordering::Greater => {
-                                new_qual = (a.qual()[read_pos] as f32 * 0.8) as u8;
-                                set_qual(a, read_pos, new_qual)?;
-                                set_qual(b, other_read_pos, 0)?;
-                            }
-
-                            // higher confidence in B
-                            std::cmp::Ordering::Less => {
-                                new_qual = (b.qual()[other_read_pos] as f32 * 0.8) as u8;
-                                set_qual(a, read_pos, 0)?;
-                                set_qual(b, other_read_pos, new_qual)?;
-                            }
-
-                            // equal score, so pick based on hash
-                            std::cmp::Ordering::Equal => {
-                                if amul {
-                                    new_qual = (a.qual()[read_pos] as f32 * 0.8) as u8;
-                                    set_qual(a, read_pos, new_qual)?;
-                                    set_qual(b, other_read_pos, 0)?;
-                                } else {
-                                    new_qual = (b.qual()[other_read_pos] as f32 * 0.8) as u8;
-                                    set_qual(a, read_pos, 0)?;
-                                    set_qual(b, other_read_pos, new_qual)?;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // read b has a deletion relative to read a
-                    if let Some(_) = bhash.get(&ref_pos.unwrap()) {
-                        let rp = read_pos;
-                        if amul {
-                            new_qual = (a.qual()[rp] as f32 * 0.8) as u8;
-                        } else {
-                            new_qual = 0;
-                        }
-
-                        set_qual(b, read_pos, new_qual)?;
+                // we are now at a existing reference position for both read A and B
+                (aread, Some(aref), bread, Some(bref)) => {
+                    if *aref < b.pos() {
+                        // we're still behind read B, so advance to catch up
+                        ap.next();
                         continue;
                     }
+
+                    assert_eq!(aref, bref, "{aref} {bref}");
+
+                    // we now are at matching ref positions covered by both reads
+                    match (aread, bread) {
+                        // read B has a deletion
+                        (&Some(aread), None) => {
+                            if amul {
+                                new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
+                            } else {
+                                new_qual = 0;
+                            }
+
+                            set_qual(a, aread, new_qual)?;
+                        }
+
+                        // read A has a deletion
+                        (None, &Some(bread)) => {
+                            if bmul {
+                                new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
+                            } else {
+                                new_qual = 0;
+                            }
+
+                            set_qual(b, bread, new_qual)?;
+                        }
+
+                        // both have non-insertion bases at this position
+                        (&Some(aread), &Some(bread)) => {
+                            (base_a, base_b) = (a.seq()[aread], b.seq()[bread]);
+
+                            // both bases mismatch, so pick based on quality (or random if tie)
+                            if base_a != base_b {
+                                match a.qual()[aread].cmp(&b.qual()[bread]) {
+                                    Ordering::Less => {
+                                        new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
+                                        set_qual(a, aread, 0)?;
+                                        set_qual(b, bread, new_qual)?;
+                                    }
+
+                                    Ordering::Greater => {
+                                        new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
+                                        set_qual(a, aread, new_qual)?;
+                                        set_qual(b, bread, 0)?;
+                                    }
+
+                                    std::cmp::Ordering::Equal => {
+                                        if amul {
+                                            new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
+                                            set_qual(a, aread, new_qual)?;
+                                            set_qual(b, bread, 0)?;
+                                        } else {
+                                            new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
+                                            set_qual(a, aread, 0)?;
+                                            set_qual(b, bread, new_qual)?;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // both bases match; Bump the quality up for one read and null the
+                            // other's
+                            new_qual = a.qual()[aread].wrapping_add(b.qual()[bread]);
+
+                            // set quals accordingly
+                            if amul {
+                                set_qual(a, aread, new_qual)?;
+                                set_qual(b, bread, 0)?;
+                            } else {
+                                set_qual(a, aread, 0)?;
+                                set_qual(b, bread, new_qual)?;
+                            }
+                        }
+
+                        (None, None) => (), // both have dels, so move on
+                    }
+
+                    ap.next();
+                    bp.next();
                 }
-            }
+            },
+            (None, Some(_)) | (Some(_), None) => break,
+            (None, None) => break,
         }
     }
 
