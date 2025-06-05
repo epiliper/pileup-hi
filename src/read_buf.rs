@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::overlap::{MapOverlaps, OverlapInsResult, OverlapMap};
+use crate::overlap::{MapOverlaps, OverlapMap};
 use crate::pileup::{cigar2rlen, CigarState, PileUp};
 use rust_htslib::bam::Record;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -60,17 +60,11 @@ impl ReadBuffer {
             in_overlap: false,
         };
 
-        match self.overlap_map.push(plp) {
-            OverlapInsResult::Inserted(plp_ref) => self.rbuf.push(plp_ref),
+        let plp_ref = Rc::new(RefCell::new(plp));
 
-            OverlapInsResult::Rejected(plp_obj) => self.rbuf.push(Rc::new(RefCell::new(plp_obj))),
-        }
+        self.overlap_map.push(Rc::clone(&plp_ref));
+        self.rbuf.push(plp_ref);
 
-        // self.rbuf.push(PileUp {
-        //     rec: r.clone(),
-        //     indel: 0,
-        //     cstate,
-        // });
         BufPushResult::Pushed
     }
 
@@ -88,11 +82,8 @@ impl ReadBuffer {
         }
     }
 
-    pub fn reset(&mut self, del_hashes: Vec<u64>) {
+    pub fn reset(&mut self) {
         assert!(self.rbuf.is_empty());
         std::mem::swap(&mut self.rbuf, &mut self.backup_buf);
-        for d in del_hashes {
-            self.overlap_map.delete_hash(d);
-        }
     }
 }

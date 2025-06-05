@@ -51,7 +51,7 @@ pub struct PileupParams {
     #[arg(long = "rf")]
     pub incl_flags: Vec<String>,
 
-    #[arg(long = "ff", default_values_t = ["BAM_FSECONDARY".to_string(), "BAM_FQCFAIL".to_string(), "BAM_FDUP".to_string()])]
+    #[arg(long = "ff", default_values_t = ["BAM_FSECONDARY".to_string(), "BAM_FQCFAIL".to_string(), "BAM_FDUP".to_string(), "BAM_FUNMAP".to_string()])]
     pub excl_flags: Vec<String>,
 
     #[arg(short = 'q', long = "min-MQ", default_value_t = 0)]

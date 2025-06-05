@@ -10,14 +10,14 @@ use std::{cell::RefCell, rc::Rc};
 pub type OverlapMap = HashMap<u64, Rc<RefCell<PileUp>>>;
 
 pub trait MapOverlaps {
-    fn push(&mut self, r: PileUp) -> OverlapInsResult;
+    fn push(&mut self, r: Rc<RefCell<PileUp>>);
     fn delete_hash(&mut self, r: u64);
 }
 
-pub enum OverlapInsResult {
-    Inserted(Rc<RefCell<PileUp>>),
-    Rejected(PileUp),
-}
+// pub enum OverlapInsResult {
+//     Inserted(Rc<RefCell<PileUp>>),
+//     Rejected(PileUp),
+// }
 
 pub fn hash_qname(r: &Record) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -26,31 +26,27 @@ pub fn hash_qname(r: &Record) -> u64 {
 }
 
 impl MapOverlaps for OverlapMap {
-    fn push(&mut self, mut plp: PileUp) -> OverlapInsResult {
-        let r = &mut plp.rec;
-        let h = hash_qname(r);
+    fn push(&mut self, plp: Rc<RefCell<PileUp>>) {
+        let mut r = &mut plp.borrow_mut().rec;
+        let h = hash_qname(&r);
 
         if r.is_mate_unmapped() || !r.is_proper_pair() {
-            return OverlapInsResult::Rejected(plp);
+            return;
         }
 
         if r.mtid() >= 0 && (r.mtid() != r.tid()) {
-            return OverlapInsResult::Rejected(plp);
+            return;
         }
 
         if let Some(mate) = self.get_mut(&h) {
-            tweak_overlap_qual(&mut mate.borrow_mut().rec, r).unwrap();
-            return OverlapInsResult::Rejected(plp);
+            // tweak_overlap_qual(&mut mate.borrow_mut().rec, &mut r).unwrap();
+            self.delete_hash(h);
+            return;
         }
 
         if r.pos() < r.mpos() || (r.is_paired() && r.mpos() == -1) {
             // criteria passed, insert
-            plp.in_overlap = true;
-            let ins = Rc::new(RefCell::new(plp));
-            let _ = self.insert(h, Rc::clone(&ins));
-            OverlapInsResult::Inserted(ins)
-        } else {
-            OverlapInsResult::Rejected(plp)
+            let _ = self.insert(h, Rc::clone(&plp));
         }
     }
 

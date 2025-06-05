@@ -3,6 +3,7 @@ use rust_htslib::bam::Record;
 
 const BAM_FPAIRED: u16 = 1;
 const BAM_FPROPER_PAIR: u16 = 2;
+const BAM_FUNMAP: u16 = 4;
 const BAM_FMUNMAP: u16 = 8;
 const BAM_FREVERSE: u16 = 16;
 const BAM_FREAD1: u16 = 64;
@@ -25,6 +26,7 @@ fn add_to_flag(flags: Vec<&str>, flag: &mut u16) -> Result<(), Error> {
             "BAM_FPAIRED" => *flag |= BAM_FPAIRED,
             "BAM_FSECONDARY" => *flag |= BAM_FSECONDARY,
             "BAM_FPROPER_PAIR" => *flag |= BAM_FPROPER_PAIR,
+            "BAM_FUNMAP" => *flag |= BAM_FUNMAP,
             "BAM_FMUNMAP" => *flag |= BAM_FMUNMAP,
             "BAM_FREVERSE" => *flag |= BAM_FREVERSE,
             "BAM_FREAD1" => *flag |= BAM_FREAD1,
@@ -76,10 +78,10 @@ impl ReadFilter {
     }
 
     pub fn check_read(&mut self, read: &Record) -> bool {
-        let mut pass;
+        // let mut pass;
 
         // check if orphan pair
-        if read.is_paired() && !read.is_proper_pair() && !self.count_orphans {
+        if !self.count_orphans && (read.is_paired() && !read.is_proper_pair()) {
             return false;
         }
 
@@ -87,20 +89,14 @@ impl ReadFilter {
             return false;
         }
 
-        // println! {"{} {:?} {:?}", read.inner.core.flag & self.inc_flag, read.inner.core.flag.to_ne_bytes(), self.inc_flag.to_ne_bytes()}
-
-        // does the flag contain any bits that we filter for?
-        pass = (read.inner.core.flag & self.inc_flag) < read.inner.core.flag;
-
-        if !pass {
-            return pass;
+        if self.inc_flag > 0 && (self.inc_flag & read.inner.core.flag) == 0 {
+            return false;
         }
 
-        // println! {"{} {:?} {:?}", read.inner.core.flag & self.exc_flag, read.inner.core.flag.to_ne_bytes(), self.exc_flag.to_ne_bytes()}
+        if self.exc_flag > 0 && (self.exc_flag & read.inner.core.flag) > 0 {
+            return false;
+        }
 
-        // does the flag contain any bits that we filter against?
-        pass |= (read.inner.core.flag & self.exc_flag) == 0;
-
-        pass
+        true
     }
 }

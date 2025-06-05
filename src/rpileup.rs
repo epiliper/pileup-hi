@@ -1,4 +1,3 @@
-use crate::overlap::hash_qname;
 use crate::params::Params;
 use crate::pileup::CigarState;
 use crate::read_buf;
@@ -9,7 +8,6 @@ use num_cpus;
 use rust_htslib::bam::record::Cigar;
 use rust_htslib::bam::{ext::BamRecordExtensions, HeaderView, IndexedReader, Read, Record};
 use std::io::Write;
-use std::rc::Rc;
 
 const UNINIT_POS: usize = usize::MAX - 1;
 const UNINIT_TID: u32 = u32::MAX - 1;
@@ -381,7 +379,6 @@ impl PileupIterator {
     pub fn set_pileup(&mut self) -> Result<bool, Error> {
         assert!(self.rbuf.backup_buf.is_empty());
         let mut generated = false;
-        let mut h: Vec<u64> = Vec::new();
 
         let mut ndel @ mut nins @ mut nbases = 0;
         let ref_base = match &self.refseq {
@@ -393,17 +390,24 @@ impl PileupIterator {
             let mut r = raw.borrow_mut();
 
             if r.rec.reference_end() - 1 < self.pos as i64 {
-                if r.in_overlap {
-                    h.push(hash_qname(&r.rec))
-                }
+                drop(r);
+                drop(raw);
                 continue;
             }
 
             let mut ipos: i32 = -1;
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
 
+            // what about this block is causing extra reads?
+            if ipos == -1 {
+                ipos = r.cstate.iseq as i32;
+            }
+
             if ipos != -1 && r.rec.qual()[ipos as usize] < self.min_baseq {
-                self.rbuf.backup_buf.push(Rc::clone(&raw));
+                // if r.rec.qual()[r.cstate.iseq as usize] < self.min_baseq {
+                drop(r);
+                self.rbuf.backup_buf.push(raw);
+                // self.rbuf.backup_buf.push(Rc::clone(&raw));
                 continue;
             }
 
@@ -455,7 +459,8 @@ impl PileupIterator {
                 _ => panic!(),
             }
 
-            self.rbuf.backup_buf.push(Rc::clone(&raw));
+            drop(r);
+            self.rbuf.backup_buf.push(raw);
         }
 
         if nbases + nins + ndel > 0 {
@@ -463,7 +468,7 @@ impl PileupIterator {
             generated = true;
         }
 
-        self.rbuf.reset(h);
+        self.rbuf.reset();
 
         Ok(generated)
     }
