@@ -88,7 +88,8 @@ pub fn write_match(
     refseq: Option<&RefSeq>,
 ) -> Result<(), Error> {
     let ipos = ipos as usize;
-    let bam_pos = cs.bam_pos as usize;
+    // let bam_pos = cs.bam_pos as usize;
+    let bam_pos = r.pos() as usize;
 
     if pos == bam_pos {
         seq_buf.push(FIRST_POS);
@@ -112,7 +113,17 @@ pub fn write_match(
     Ok(())
 }
 
-pub fn write_del(pos: usize, seq_buf: &mut Vec<u8>, del_len: usize) -> Result<(), Error> {
+pub fn write_del(
+    cs: &CigarState,
+    r: &Record,
+    ipos: u32,
+    pos: usize,
+    seq_buf: &mut Vec<u8>,
+    qual_buf: &mut Vec<u8>,
+    refseq: Option<&RefSeq>,
+    del_len: usize,
+) -> Result<(), Error> {
+    write_match(cs, r, ipos, pos, seq_buf, qual_buf, refseq)?;
     write!(seq_buf, "-{}", del_len)?;
     for _ in pos..pos + del_len {
         seq_buf.push(b'N')
@@ -124,9 +135,12 @@ pub fn write_ins(
     cs: &CigarState,
     r: &Record,
     ipos: u32,
+    pos: usize,
     seq_buf: &mut Vec<u8>,
     qual_buf: &mut Vec<u8>,
+    refseq: Option<&RefSeq>,
 ) -> Result<(), Error> {
+    write_match(cs, r, ipos, pos, seq_buf, qual_buf, refseq)?;
     let mut k = cs.icig + 1;
     let ncig = cs.cig.len();
     let ipos = ipos + 1;
@@ -399,11 +413,17 @@ impl PileupIterator {
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
 
             // what about this block is causing extra reads?
-            if ipos == -1 {
-                ipos = r.cstate.iseq as i32;
-            }
+            // if ipos == -1 {
+            //     ipos = r.cstate.iseq as i32;
+            // }
 
-            if ipos != -1 && r.rec.qual()[ipos as usize] < self.min_baseq {
+            let qual_idx = if ipos == -1 {
+                r.cstate.iseq as i32
+            } else {
+                ipos as i32
+            };
+
+            if r.rec.qual()[qual_idx as usize] < self.min_baseq {
                 // if r.rec.qual()[r.cstate.iseq as usize] < self.min_baseq {
                 drop(r);
                 self.rbuf.backup_buf.push(raw);
@@ -432,14 +452,26 @@ impl PileupIterator {
                         &r.cstate,
                         &r.rec,
                         ipos as u32,
+                        self.pos,
                         &mut self.seq_buf,
                         &mut self.qual_buf,
+                        self.refseq.as_ref(),
                     )?;
                 }
 
                 CigarAtPos::Op(Cigar::Del(l)) => {
                     if ipos != -1 {
-                        write_del(self.pos, &mut self.seq_buf, l as usize)?;
+                        // write_del(self.pos, &mut self.seq_buf, l as usize)?;
+                        write_del(
+                            &r.cstate,
+                            &r.rec,
+                            ipos as u32,
+                            self.pos,
+                            &mut self.seq_buf,
+                            &mut self.qual_buf,
+                            self.refseq.as_ref(),
+                            l as usize,
+                        )?
                     } else {
                         self.seq_buf.push(b'*');
                     }
