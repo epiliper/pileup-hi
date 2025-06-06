@@ -67,12 +67,14 @@ pub fn get_base_to_ref(
         let ref_base = refseq.get_base(ref_coord)?;
         if ref_base == cur_base {
             if is_reverse {
-                cur_base = R_MATCH;
+                // cur_base = R_MATCH;
+                Ok(R_MATCH)
             } else {
-                cur_base = F_MATCH;
+                Ok(F_MATCH)
             }
+        } else {
+            Ok(get_base(cur_base, is_reverse))
         }
-        Ok(cur_base)
     } else {
         Ok(get_base(cur_base, is_reverse))
     }
@@ -414,7 +416,13 @@ impl PileupIterator {
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
 
             let qual_idx = if ipos == -1 {
-                r.cstate.iseq as usize
+                if r.cstate.iseq == 0 {
+                    drop(r);
+                    self.rbuf.backup_buf.push(raw);
+                    continue;
+                } else {
+                    r.cstate.iseq as usize
+                }
             } else {
                 ipos as usize
             };
@@ -430,7 +438,7 @@ impl PileupIterator {
                     write_match(
                         &r.cstate,
                         &r.rec,
-                        ipos as u32,
+                        qual_idx as u32,
                         self.pos,
                         &mut self.seq_buf,
                         &mut self.qual_buf,
@@ -445,7 +453,8 @@ impl PileupIterator {
                     write_ins(
                         &r.cstate,
                         &r.rec,
-                        ipos as u32,
+                        // ipos as u32,
+                        qual_idx as u32,
                         self.pos,
                         &mut self.seq_buf,
                         &mut self.qual_buf,
@@ -459,7 +468,8 @@ impl PileupIterator {
                         write_del(
                             &r.cstate,
                             &r.rec,
-                            ipos as u32,
+                            // ipos as u32,
+                            qual_idx as u32,
                             self.pos,
                             &mut self.seq_buf,
                             &mut self.qual_buf,
