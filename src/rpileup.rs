@@ -79,7 +79,7 @@ pub fn get_base_to_ref(
 }
 
 pub fn write_match(
-    cs: &CigarState,
+    _cs: &CigarState,
     r: &Record,
     ipos: u32,
     pos: usize,
@@ -87,6 +87,7 @@ pub fn write_match(
     qual_buf: &mut Vec<u8>,
     refseq: Option<&RefSeq>,
 ) -> Result<(), Error> {
+    // assert_ne!(ipos, -1);
     let ipos = ipos as usize;
     // let bam_pos = cs.bam_pos as usize;
     let bam_pos = r.pos() as usize;
@@ -409,25 +410,18 @@ impl PileupIterator {
                 continue;
             }
 
-            let mut ipos: i32 = -1;
+            let mut ipos: i32 = 0;
             let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
 
-            // what about this block is causing extra reads?
-            // if ipos == -1 {
-            //     ipos = r.cstate.iseq as i32;
-            // }
-
             let qual_idx = if ipos == -1 {
-                r.cstate.iseq as i32
+                r.cstate.iseq as usize
             } else {
-                ipos as i32
+                ipos as usize
             };
 
-            if r.rec.qual()[qual_idx as usize] < self.min_baseq {
-                // if r.rec.qual()[r.cstate.iseq as usize] < self.min_baseq {
+            if r.rec.qual()[qual_idx] < self.min_baseq {
                 drop(r);
                 self.rbuf.backup_buf.push(raw);
-                // self.rbuf.backup_buf.push(Rc::clone(&raw));
                 continue;
             }
 

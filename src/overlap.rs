@@ -14,11 +14,6 @@ pub trait MapOverlaps {
     fn delete_hash(&mut self, r: u64);
 }
 
-// pub enum OverlapInsResult {
-//     Inserted(Rc<RefCell<PileUp>>),
-//     Rejected(PileUp),
-// }
-
 pub fn hash_qname(r: &Record) -> u64 {
     let mut hasher = DefaultHasher::new();
     r.qname().hash(&mut hasher);
@@ -28,7 +23,6 @@ pub fn hash_qname(r: &Record) -> u64 {
 impl MapOverlaps for OverlapMap {
     fn push(&mut self, plp: Rc<RefCell<PileUp>>) {
         let mut r = &mut plp.borrow_mut().rec;
-        let h = hash_qname(&r);
 
         if r.is_mate_unmapped() || !r.is_proper_pair() {
             return;
@@ -38,13 +32,15 @@ impl MapOverlaps for OverlapMap {
             return;
         }
 
+        let h = hash_qname(&r);
+
         if let Some(mate) = self.get_mut(&h) {
             tweak_overlap_qual(&mut mate.borrow_mut().rec, &mut r).unwrap();
             self.delete_hash(h);
             return;
         }
 
-        if r.pos() < r.mpos() || (r.is_paired() && r.mpos() == -1) {
+        if r.mpos() >= r.pos() || (r.is_paired() && r.mpos() == -1) {
             // criteria passed, insert
             let _ = self.insert(h, Rc::clone(&plp));
         }
@@ -103,6 +99,9 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
     let mut base_a @ mut base_b: u8;
     let amul @ bmul: bool;
 
+    // we assume that we encounter reads in order (e.g coord-sorted).
+    assert!(a.pos() <= b.pos());
+
     // using aligned_pairs() for this, since I just need sequence that overlaps in covered ref
     // positions.
     // gets iterators over tuples of (read_pos, ref_pos).
@@ -136,7 +135,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                 // we are now at a existing reference position for both read A and B
                 (aread, Some(aref), bread, Some(bref)) => {
                     if *aref < b.pos() {
-                        // we're still behind read B, so advance to catch up
+                        // we're still behind read B, so advance to catch up, and try again
                         ap.next();
                         continue;
                     }
@@ -186,7 +185,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                                         set_qual(b, bread, 0)?;
                                     }
 
-                                    std::cmp::Ordering::Equal => {
+                                    Ordering::Equal => {
                                         if amul {
                                             new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
                                             set_qual(a, aread, new_qual)?;
@@ -198,29 +197,32 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                                         }
                                     }
                                 }
-                            }
-
-                            // both bases match; Bump the quality up for one read and null the
-                            // other's
-                            new_qual = a.qual()[aread].wrapping_add(b.qual()[bread]);
-
-                            // set quals accordingly
-                            if amul {
-                                set_qual(a, aread, new_qual)?;
-                                set_qual(b, bread, 0)?;
                             } else {
-                                set_qual(a, aread, 0)?;
-                                set_qual(b, bread, new_qual)?;
+                                // both bases match; Bump the quality up for one read and null the
+                                // other's
+                                new_qual = (a.qual()[aread].wrapping_add(b.qual()[bread])).min(200);
+
+                                // set quals accordingly
+                                if amul {
+                                    set_qual(a, aread, new_qual)?;
+                                    set_qual(b, bread, 0)?;
+                                } else {
+                                    set_qual(a, aread, 0)?;
+                                    set_qual(b, bread, new_qual)?;
+                                }
                             }
                         }
 
                         (None, None) => (), // both have dels, so move on
                     }
 
+                    // done with this reference position. Moving on...
                     ap.next();
                     bp.next();
                 }
             },
+
+            // once we run out of bases for one of the reads, no use comparing.
             (None, Some(_)) | (Some(_), None) => break,
             (None, None) => break,
         }
@@ -267,6 +269,9 @@ mod tests {
 
         set_qual(&mut record, 8, 4).unwrap();
         assert_eq!(record.qual()[8], 4);
+
+        set_qual(&mut record, 0, 4).unwrap();
+        assert_eq!(record.qual()[0], 4);
     }
 
     #[test]
@@ -284,5 +289,47 @@ mod tests {
         );
 
         assert!(set_qual(&mut record, 12, 8).is_err());
+    }
+
+    #[test]
+    pub fn test_overlap_tweak1() {
+        let mut a = Record::new();
+        a.set(
+            b"read1",
+            Some(&CigarString(vec![
+                Cigar::Match(4),
+                Cigar::Del(1),
+                Cigar::Match(5),
+            ])),
+            b"AAAAGTACA",
+            b"#########",
+        );
+
+        a.set_pos(1);
+
+        let mut b = Record::new();
+        b.set(
+            b"read0",
+            Some(&CigarString(vec![Cigar::Match(10)])),
+            b"TAAATGTACT",
+            b"E########E",
+        );
+
+        b.set_pos(1);
+        b.set_reverse();
+
+        tweak_overlap_qual(&mut b, &mut a).unwrap();
+
+        let exp_qual_4 = (b'#' as f32 * 0.8) as u8;
+        assert_eq!(b.qual()[4], exp_qual_4);
+        assert_eq!(a.qual()[4], 0);
+
+        let exp_qual_0 = (b'E' as f32 * 0.8) as u8;
+        assert_eq!(b.qual()[0], exp_qual_0);
+        assert_eq!(a.qual()[0], 0);
+
+        let exp_qual_8 = (b'E' as f32 * 0.8) as u8;
+        assert_eq!(b.qual()[9], exp_qual_8);
+        assert_eq!(a.qual()[8], 0);
     }
 }
