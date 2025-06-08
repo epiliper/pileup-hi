@@ -77,19 +77,16 @@ pub fn set_qual(r: &mut Record, idx: usize, qual: u8) -> Result<(), Error> {
 // we just combine the two rounds of hashing and return true/false based on first bit
 // of hashed value.
 pub fn decide_which_read(chars: &[u8]) -> bool {
-    let mut chars = chars.into_iter();
-    let mut h = match chars.next() {
-        Some(c) => *c as u64,
-        None => 0,
-    };
+    let chars = chars.into_iter();
+    let mut h = 0u32;
     for c in chars {
-        h = (h << 5).wrapping_sub(h) + *c as u64;
+        h = (h << 5) - (h) + *c as u32;
     }
-    h = h.wrapping_add(!(h << 15));
+    h += !(h << 15);
     h ^= h >> 10;
-    h = h.wrapping_add(h << 3);
+    h += h << 3;
     h ^= h >> 6;
-    h = h.wrapping_add(!(h << 11));
+    h += !(h << 11);
     h ^= h >> 16;
     h & 1 != 0
 }
@@ -98,6 +95,8 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
     let mut new_qual: u8;
     let mut base_a @ mut base_b: u8;
     let amul @ bmul: bool;
+
+    // println! {"QNAME: {} |", std::str::from_utf8(a.qname())?}
 
     // we assume that we encounter reads in order (e.g coord-sorted).
     assert!(a.pos() <= b.pos());
@@ -210,6 +209,8 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                                     set_qual(a, aread, 0)?;
                                     set_qual(b, bread, new_qual)?;
                                 }
+
+                                // println!("Adjusting quality to be ultra-confident {aread} | A POS: {aread} | B POS: {bread} | A QUAL: {} | B QUAL: {}", a.qual()[aread], b.qual()[bread])
                             }
                         }
 
