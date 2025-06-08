@@ -321,14 +321,21 @@ impl PileupIterator {
 
             if r.is_unmapped() {
                 match self.reader.read(&mut self.cur_rec) {
-                    None => break,
+                    None => {
+                        self.cur_rec.set_tid(-1);
+                        break;
+                    }
                     Some(_) => continue,
                 };
             }
 
             if !self.read_filter.check_read(&r) {
                 match self.reader.read(&mut self.cur_rec) {
-                    None => break,
+                    None => {
+                        self.cur_rec.set_tid(-1);
+                        break;
+                    }
+
                     Some(_) => continue,
                 };
             }
@@ -356,7 +363,10 @@ impl PileupIterator {
                     self.cur_rec.set_tid(-1);
                     match self.reader.read(&mut self.cur_rec) {
                         Some(Ok(_)) => continue,
-                        None => break,
+                        None => {
+                            self.pos = self.max_pos;
+                            break;
+                        }
                         Some(Err(_)) => panic!(),
                     }
                 }
