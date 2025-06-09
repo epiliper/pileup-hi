@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use crate::pileup::PileUp;
 use anyhow::Error;
-use rust_htslib::bam::{ext::BamRecordExtensions, Record};
+use rust_htslib::bam::{record::Cigar, Record};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::slice;
@@ -18,6 +18,145 @@ pub fn hash_qname(r: &Record) -> u64 {
     let mut hasher = DefaultHasher::new();
     r.qname().hash(&mut hasher);
     hasher.finish()
+}
+
+/// a twist on [rust_htslib::bam::ext::IterAlignedPairsFull] that differentiates between
+/// [Cigar::RefSkip] and [Cigar::Del].
+pub struct CigarWalker {
+    del_remaining: u32,
+    ins_remaining: u32,
+    match_remaining: u32,
+    refskip_remaining: u32,
+    ref_pos: i64,
+    read_pos: usize,
+    cigar: Vec<Cigar>,
+    cigar_index: usize,
+    in_del: bool,
+}
+
+impl CigarWalker {
+    pub fn new(r: &Record) -> Self {
+        Self {
+            del_remaining: 0,
+            ins_remaining: 0,
+            match_remaining: 0,
+            refskip_remaining: 0,
+            ref_pos: r.pos(),
+            read_pos: 0,
+            cigar: r.cigar().take().0,
+            cigar_index: 0,
+            in_del: false,
+        }
+    }
+
+    pub fn move_to_next_match(&mut self) -> Option<Cigar> {
+        if self.match_remaining > 0 {
+            self.match_remaining -= 1;
+            return Some(Cigar::Match(1)); // already in match block
+        }
+
+        let mut ret: Option<Cigar>;
+        loop {
+            ret = self.next();
+            match ret {
+                None => {
+                    return None;
+                }
+
+                Some(Cigar::Match(_)) => {
+                    return ret;
+                }
+
+                _ => continue,
+            }
+        }
+    }
+
+    pub fn move_to_ref_pos(&mut self, pos: i64) -> Option<Cigar> {
+        if pos == self.ref_pos {
+            return Some(Cigar::Match(1));
+        }
+
+        let mut ret = self.next();
+        while self.ref_pos < pos {
+            ret = self.next();
+            match ret {
+                None => break,
+                _ => continue,
+            }
+        }
+        ret
+    }
+}
+
+impl Iterator for CigarWalker {
+    type Item = Cigar;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.del_remaining > 0 {
+            self.del_remaining -= 1;
+            self.ref_pos += 1;
+            return Some(Cigar::Del(1));
+        }
+        if self.ins_remaining > 0 {
+            self.ins_remaining -= 1;
+            self.read_pos += 1;
+            return Some(Cigar::Ins(1));
+        }
+        if self.match_remaining > 0 {
+            self.match_remaining -= 1;
+            self.ref_pos += 1;
+            self.read_pos += 1;
+            return Some(Cigar::Match(1));
+        }
+        if self.refskip_remaining > 0 {
+            self.refskip_remaining -= 1;
+            self.ref_pos += 1;
+            return Some(Cigar::RefSkip(1));
+        }
+
+        while self.cigar_index < self.cigar.len() {
+            let entry = self.cigar[self.cigar_index];
+            match entry {
+                Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
+                    self.in_del = false;
+                    self.read_pos += 1;
+                    self.ref_pos += 1;
+                    self.match_remaining = len - 1;
+                    self.cigar_index += 1;
+                    return Some(Cigar::Match(1));
+                }
+
+                Cigar::Ins(len) | Cigar::SoftClip(len) => {
+                    self.in_del = false;
+                    self.read_pos += 1;
+                    self.ins_remaining = len - 1;
+                    self.cigar_index += 1;
+                    return Some(Cigar::Ins(1));
+                }
+
+                Cigar::Del(len) => {
+                    self.in_del = true;
+                    self.ref_pos += 1;
+                    self.del_remaining = len - 1;
+                    self.cigar_index += 1;
+                    return Some(Cigar::Del(1));
+                }
+
+                Cigar::RefSkip(len) => {
+                    self.in_del = false;
+                    self.ref_pos += 1;
+                    self.refskip_remaining = len - 1;
+                    self.cigar_index += 1;
+                    return Some(Cigar::RefSkip(1));
+                }
+
+                Cigar::HardClip(_) => (),
+                Cigar::Pad(_) => panic!("Unsupported padding op"),
+            }
+            self.cigar_index += 1
+        }
+        None
+    }
 }
 
 impl MapOverlaps for OverlapMap {
@@ -93,140 +232,118 @@ pub fn decide_which_read(chars: &[u8]) -> bool {
 
 pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
     let mut new_qual: u8;
-    let mut base_a @ mut base_b: u8;
-    let amul @ bmul: bool;
-
+    let mut ret_a @ mut ret_b: Option<Cigar>;
     // println! {"QNAME: {} |", std::str::from_utf8(a.qname())?}
 
     // we assume that we encounter reads in order (e.g coord-sorted).
     assert!(a.pos() <= b.pos());
 
-    // using aligned_pairs() for this, since I just need sequence that overlaps in covered ref
-    // positions.
-    // gets iterators over tuples of (read_pos, ref_pos).
+    let mut a_iter = CigarWalker::new(&a);
+    let mut b_iter = CigarWalker::new(&b);
 
-    // we use [Record::aligned_pairs_full] to also retrieve deletion bases, for which we also adjust quality
-    // (treated the same as mismatches)
-    let mut ap = a
-        .aligned_pairs_full()
-        .map(|x| (x[0].map(|x| x as usize), x[1]))
-        .peekable();
-
-    let mut bp = b
-        .aligned_pairs_full()
-        .map(|x| (x[0].map(|x| x as usize), x[1]))
-        .peekable();
-
-    // for now: using htslib's hashing heuristic to decide which read to modify, bound to change
-    // (maybe)
-    match decide_which_read(a.qname()) {
-        true => (amul, bmul) = (true, false),
-        false => (amul, bmul) = (false, true),
-    }
+    let (amul, bmul) = match decide_which_read(a.qname()) {
+        true => (true, false),
+        false => (false, true),
+    };
 
     loop {
-        match (ap.peek(), bp.peek()) {
-            (Some((aread, aref)), Some((bread, bref))) => match (aread, aref, bread, bref) {
-                (_, None, _, None) => _ = (ap.next(), bp.next()), // both with insertion
-                (_, _, _, None) => _ = bp.next(),                 // b has an insertion at this base
-                (_, None, _, _) => _ = ap.next(),                 // a has an insertion at this base
-
-                // we are now at a existing reference position for both read A and B
-                (aread, Some(aref), bread, Some(bref)) => {
-                    if *aref < b.pos() {
-                        // we're still behind read B, so advance to catch up, and try again
-                        ap.next();
-                        continue;
-                    }
-
-                    assert_eq!(aref, bref, "{aref} {bref}");
-
-                    // we now are at matching ref positions covered by both reads
-                    match (aread, bread) {
-                        // read B has a deletion
-                        (&Some(aread), None) => {
-                            if amul {
-                                new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
-                            } else {
-                                new_qual = 0;
-                            }
-
-                            set_qual(a, aread, new_qual)?;
-                        }
-
-                        // read A has a deletion
-                        (None, &Some(bread)) => {
-                            if bmul {
-                                new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
-                            } else {
-                                new_qual = 0;
-                            }
-
-                            set_qual(b, bread, new_qual)?;
-                        }
-
-                        // both have non-insertion bases at this position
-                        (&Some(aread), &Some(bread)) => {
-                            (base_a, base_b) = (a.seq()[aread], b.seq()[bread]);
-
-                            // both bases mismatch, so pick based on quality (or random if tie)
-                            if base_a != base_b {
-                                match a.qual()[aread].cmp(&b.qual()[bread]) {
-                                    Ordering::Less => {
-                                        new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
-                                        set_qual(a, aread, 0)?;
-                                        set_qual(b, bread, new_qual)?;
-                                    }
-
-                                    Ordering::Greater => {
-                                        new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
-                                        set_qual(a, aread, new_qual)?;
-                                        set_qual(b, bread, 0)?;
-                                    }
-
-                                    Ordering::Equal => {
-                                        if amul {
-                                            new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
-                                            set_qual(a, aread, new_qual)?;
-                                            set_qual(b, bread, 0)?;
-                                        } else {
-                                            new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
-                                            set_qual(a, aread, 0)?;
-                                            set_qual(b, bread, new_qual)?;
-                                        }
-                                    }
-                                }
-                            } else {
-                                // both bases match; Bump the quality up for one read and null the
-                                // other's
-                                new_qual = (a.qual()[aread].wrapping_add(b.qual()[bread])).min(200);
-
-                                // set quals accordingly
-                                if amul {
-                                    set_qual(a, aread, new_qual)?;
-                                    set_qual(b, bread, 0)?;
-                                } else {
-                                    set_qual(a, aread, 0)?;
-                                    set_qual(b, bread, new_qual)?;
-                                }
-
-                                // println!("Adjusting quality to be ultra-confident {aread} | A POS: {aread} | B POS: {bread} | A QUAL: {} | B QUAL: {}", a.qual()[aread], b.qual()[bread])
-                            }
-                        }
-
-                        (None, None) => (), // both have dels, so move on
-                    }
-
-                    // done with this reference position. Moving on...
-                    ap.next();
-                    bp.next();
-                }
-            },
-
-            // once we run out of bases for one of the reads, no use comparing.
-            (None, Some(_)) | (Some(_), None) => break,
-            (None, None) => break,
+        ret_a = a_iter.move_to_next_match();
+        match ret_a {
+            None => break,
+            _ => (),
         }
+
+        ret_b = b_iter.move_to_next_match();
+        match ret_b {
+            None => break,
+            _ => (),
+        }
+
+        println! {"{} {} {} {}", a_iter.ref_pos, a_iter.match_remaining, b_iter.ref_pos, b_iter.match_remaining}
+
+        if a_iter.ref_pos != b_iter.ref_pos {
+            // del in read B
+            if a_iter.ref_pos < b_iter.ref_pos {
+                while a_iter.ref_pos < b_iter.ref_pos {
+                    println! {"DEL {} {}", a_iter.ref_pos, b_iter.ref_pos}
+                    let new_qual = match amul {
+                        true => (a.qual()[a_iter.read_pos] as f32 * 0.8) as u8,
+                        false => 0,
+                    };
+                    set_qual(a, a_iter.read_pos, new_qual)?;
+                    if a_iter.next().is_none() {
+                        break;
+                    }
+                }
+            }
+
+            // del in read A
+            if b_iter.ref_pos < a_iter.ref_pos {
+                while b_iter.ref_pos < a_iter.ref_pos {
+                    println! {"DEL {} {}", a_iter.ref_pos, b_iter.ref_pos}
+                    new_qual = match bmul {
+                        true => (b.qual()[b_iter.read_pos] as f32 * 0.8) as u8,
+                        false => 0,
+                    };
+                    set_qual(b, b_iter.read_pos, new_qual)?;
+                    if b_iter.next().is_none() {
+                        break;
+                    }
+                }
+            }
+
+            // assert_eq!(a_iter.ref_pos, b_iter.ref_pos);
+
+            // read does not match
+            if a.seq()[a_iter.read_pos] != b.seq()[b_iter.read_pos] {
+                match a.qual()[a_iter.read_pos].cmp(&b.qual()[b_iter.read_pos]) {
+                    Ordering::Greater => {
+                        new_qual = (a.qual()[a_iter.read_pos] as f32 * 0.8) as u8;
+                        set_qual(a, a_iter.read_pos, new_qual)?;
+                        set_qual(b, b_iter.read_pos, 0)?;
+                    }
+                    Ordering::Less => {
+                        new_qual = (b.qual()[b_iter.read_pos] as f32 * 0.8) as u8;
+                        set_qual(a, a_iter.read_pos, 0)?;
+                        set_qual(b, b_iter.read_pos, new_qual)?;
+                    }
+                    Ordering::Equal => match amul {
+                        true => {
+                            new_qual = (a.qual()[a_iter.read_pos] as f32 * 0.8) as u8;
+                            set_qual(a, a_iter.read_pos, new_qual)?;
+                            set_qual(b, b_iter.read_pos, 0)?;
+                        }
+
+                        false => {
+                            new_qual = (b.qual()[b_iter.read_pos] as f32 * 0.8) as u8;
+                            set_qual(a, a_iter.read_pos, 0)?;
+                            set_qual(b, b_iter.read_pos, new_qual)?;
+                        }
+                    },
+                }
+            } else {
+                new_qual = (a.seq()[a_iter.read_pos] + b.seq()[b_iter.read_pos]).min(200);
+                match amul {
+                    true => {
+                        set_qual(a, a_iter.read_pos, new_qual)?;
+                        set_qual(b, b_iter.read_pos, 0)?;
+                    }
+
+                    false => {
+                        set_qual(a, a_iter.read_pos, 0)?;
+                        set_qual(b, b_iter.read_pos, new_qual)?;
+                    }
+                }
+            }
+        }
+
+        if a_iter.next().is_none() {
+            break;
+        }
+
+        if b_iter.next().is_none() {
+            break;
+        };
     }
 
     Ok(())
@@ -310,7 +427,7 @@ mod tests {
 
         let mut b = Record::new();
         b.set(
-            b"read0",
+            b"read1",
             Some(&CigarString(vec![Cigar::Match(10)])),
             b"TAAATGTACT",
             b"E########E",
@@ -319,18 +436,62 @@ mod tests {
         b.set_pos(1);
         b.set_reverse();
 
-        tweak_overlap_qual(&mut b, &mut a).unwrap();
+        tweak_overlap_qual(&mut a, &mut b).unwrap();
 
         let exp_qual_4 = (b'#' as f32 * 0.8) as u8;
+        assert_eq!(a.qual()[4], 0, "{} {}", a.qual()[4], b.qual()[4]);
         assert_eq!(b.qual()[4], exp_qual_4);
-        assert_eq!(a.qual()[4], 0);
 
         let exp_qual_0 = (b'E' as f32 * 0.8) as u8;
-        assert_eq!(b.qual()[0], exp_qual_0);
         assert_eq!(a.qual()[0], 0);
+        assert_eq!(b.qual()[0], exp_qual_0);
 
         let exp_qual_8 = (b'E' as f32 * 0.8) as u8;
         assert_eq!(b.qual()[9], exp_qual_8);
         assert_eq!(a.qual()[8], 0);
+    }
+
+    #[test]
+    pub fn test_overlap_tweak2() {
+        let mut a = Record::new();
+        a.set(
+            b"read1",
+            Some(&CigarString(vec![
+                Cigar::Match(4),
+                Cigar::Del(2),
+                Cigar::Match(5),
+            ])),
+            b"AAAATACA",
+            b"########",
+        );
+
+        a.set_pos(1);
+
+        let mut b = Record::new();
+
+        b.set(
+            b"read1",
+            Some(&CigarString(vec![Cigar::Match(10)])),
+            b"TAAATGTACT",
+            b"E########E",
+        );
+
+        b.set_pos(1);
+        b.set_reverse();
+
+        tweak_overlap_qual(&mut a, &mut b).unwrap();
+
+        // check deletion here...
+        let exp_qual_4 = (b'#' as f32 * 0.8) as u8;
+        assert_eq!(a.qual()[4], 0);
+        assert_eq!(b.qual()[4], exp_qual_4);
+
+        let exp_qual_0 = (b'E' as f32 * 0.8) as u8;
+        assert_eq!(a.qual()[0], 0);
+        assert_eq!(b.qual()[0], exp_qual_0);
+
+        let exp_qual_8 = (b'E' as f32 * 0.8) as u8;
+        assert_eq!(b.qual()[9], exp_qual_8);
+        assert_eq!(a.qual()[7], 0);
     }
 }

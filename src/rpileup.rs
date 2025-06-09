@@ -364,7 +364,7 @@ impl PileupIterator {
                     match self.reader.read(&mut self.cur_rec) {
                         Some(Ok(_)) => continue,
                         None => {
-                            self.pos = self.max_pos;
+                            self.cur_rec.set_tid(-1);
                             break;
                         }
                         Some(Err(_)) => panic!(),
@@ -561,9 +561,11 @@ impl PileupIterator {
 
         // if we are at the next position in the bam where reads are within window range,
         // resume read intake
-        if self.pos == self.next_pos {
-            self.fill_buffer()?;
-        }
+        // if self.pos == self.next_pos {
+        //     self.fill_buffer()?;
+        // }
+
+        self.fill_buffer()?;
 
         // if we have reads in buffer, attempt to generate plp.
         if !self.rbuf.rbuf.is_empty() {
