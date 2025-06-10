@@ -8,6 +8,8 @@ pub struct CigarState {
     pub icig: usize,  // position in cigar string
     pub iseq: u32,    // position in read sequence that corresponds to cigar pos
     pub bam_pos: u32, // ref coord of first base
+    pub qpos: usize,
+    pub del: bool,
 }
 
 pub struct PileUp {

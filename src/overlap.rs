@@ -42,7 +42,7 @@ impl MapOverlaps for OverlapMap {
 
         if r.mpos() >= r.pos() || (r.is_paired() && r.mpos() == -1) {
             // criteria passed, insert
-            let _ = self.insert(h, Rc::clone(&plp));
+            self.insert(h, Rc::clone(&plp));
         }
     }
 
@@ -146,7 +146,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                         // read B has a deletion
                         (&Some(aread), None) => {
                             if amul {
-                                new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
+                                new_qual = (a.qual()[aread] as f64 * 0.8) as u8;
                             } else {
                                 new_qual = 0;
                             }
@@ -157,7 +157,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                         // read A has a deletion
                         (None, &Some(bread)) => {
                             if bmul {
-                                new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
+                                new_qual = (b.qual()[bread] as f64 * 0.8) as u8;
                             } else {
                                 new_qual = 0;
                             }
@@ -173,24 +173,24 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                             if base_a != base_b {
                                 match a.qual()[aread].cmp(&b.qual()[bread]) {
                                     Ordering::Less => {
-                                        new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
+                                        new_qual = (b.qual()[bread] as f64 * 0.8) as u8;
                                         set_qual(a, aread, 0)?;
                                         set_qual(b, bread, new_qual)?;
                                     }
 
                                     Ordering::Greater => {
-                                        new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
+                                        new_qual = (a.qual()[aread] as f64 * 0.8) as u8;
                                         set_qual(a, aread, new_qual)?;
                                         set_qual(b, bread, 0)?;
                                     }
 
                                     Ordering::Equal => {
                                         if amul {
-                                            new_qual = (a.qual()[aread] as f32 * 0.8) as u8;
+                                            new_qual = (a.qual()[aread] as f64 * 0.8) as u8;
                                             set_qual(a, aread, new_qual)?;
                                             set_qual(b, bread, 0)?;
                                         } else {
-                                            new_qual = (b.qual()[bread] as f32 * 0.8) as u8;
+                                            new_qual = (b.qual()[bread] as f64 * 0.8) as u8;
                                             set_qual(a, aread, 0)?;
                                             set_qual(b, bread, new_qual)?;
                                         }
@@ -319,7 +319,7 @@ mod tests {
         b.set_pos(1);
         b.set_reverse();
 
-        tweak_overlap_qual(&mut b, &mut a).unwrap();
+        tweak_overlap_qual(&mut a, &mut b).unwrap();
 
         let exp_qual_4 = (b'#' as f32 * 0.8) as u8;
         assert_eq!(b.qual()[4], exp_qual_4);

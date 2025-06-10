@@ -172,7 +172,7 @@ pub fn write_ins(
     Ok(())
 }
 
-pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarAtPos {
+pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
     let cig = &cs.cig;
     let ncig = cig.len();
     let mut op: Cigar;
@@ -195,7 +195,8 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarAtPo
                     continue;
                 }
 
-                *ipos = pos as i32 - cs.bam_pos as i32 + cs.iseq as i32;
+                cs.del = false;
+                cs.qpos = pos as usize - cs.bam_pos as usize + cs.iseq as usize;
                 if end_pos == pos && cs.icig + 1 < ncig {
                     let next_op = cig[cs.icig + 1];
 
@@ -224,7 +225,9 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32, ipos: &mut i32) -> CigarAtPo
 
                 // this coordinate comes after we already indicated the deletion, so
                 // mark ipos to avoid repeating the deletion in this and subsequent plp cols
-                *ipos = -1;
+                cs.del = true;
+                // cs.qpos = (cs.iseq + len) as usize;
+                cs.qpos = cs.iseq as usize;
                 return CigarAtPos::Op(op);
             }
 
@@ -364,7 +367,8 @@ impl PileupIterator {
                     match self.reader.read(&mut self.cur_rec) {
                         Some(Ok(_)) => continue,
                         None => {
-                            self.pos = self.max_pos;
+                            // self.pos = self.max_pos;
+                            self.cur_rec.set_tid(-1);
                             break;
                         }
                         Some(Err(_)) => panic!(),
@@ -413,6 +417,7 @@ impl PileupIterator {
             None => b'N',
         };
 
+        let mut cnt = 0;
         for raw in self.rbuf.rbuf.drain(..) {
             let mut r = raw.borrow_mut();
 
@@ -422,33 +427,22 @@ impl PileupIterator {
                 continue;
             }
 
-            let mut ipos: i32 = 0;
-            let ret = cigar_get_pos(&mut r.cstate, self.pos as u32, &mut ipos);
+            let ret = cigar_get_pos(&mut r.cstate, self.pos as u32);
 
-            let qual_idx = if ipos == -1 {
-                if r.cstate.iseq == 0 {
-                    drop(r);
-                    self.rbuf.backup_buf.push(raw);
-                    continue;
-                } else {
-                    r.cstate.iseq as usize
-                }
-            } else {
-                ipos as usize
-            };
-
-            if r.rec.qual()[qual_idx] < self.min_baseq {
+            if r.rec.qual()[r.cstate.qpos] < self.min_baseq {
+                // if rqual < self.min_baseq {
                 drop(r);
                 self.rbuf.backup_buf.push(raw);
                 continue;
             }
 
+            // println! {"POS: {} QNAME: {}", self.pos, std::str::from_utf8(r.rec.qname())?}
             match ret {
                 CigarAtPos::Op(Cigar::Match(_)) => {
                     write_match(
                         &r.cstate,
                         &r.rec,
-                        qual_idx as u32,
+                        r.cstate.qpos as u32,
                         self.pos,
                         &mut self.seq_buf,
                         &mut self.qual_buf,
@@ -464,7 +458,7 @@ impl PileupIterator {
                         &r.cstate,
                         &r.rec,
                         // ipos as u32,
-                        qual_idx as u32,
+                        r.cstate.qpos as u32,
                         self.pos,
                         &mut self.seq_buf,
                         &mut self.qual_buf,
@@ -473,13 +467,13 @@ impl PileupIterator {
                 }
 
                 CigarAtPos::Op(Cigar::Del(l)) => {
-                    if ipos != -1 {
+                    if !r.cstate.del {
                         // write_del(self.pos, &mut self.seq_buf, l as usize)?;
                         write_del(
                             &r.cstate,
                             &r.rec,
                             // ipos as u32,
-                            qual_idx as u32,
+                            r.cstate.qpos as u32,
                             self.pos,
                             &mut self.seq_buf,
                             &mut self.qual_buf,
@@ -611,18 +605,18 @@ mod tests {
 
         record.set_pos(1);
 
-        let mut ipos = 0;
-
         let mut cstate = CigarState {
             cig: record.cigar(),
             icig: 0,
             iseq: 0,
             bam_pos: 1,
+            qpos: 0,
+            del: false,
         };
 
-        let mut ret = cigar_get_pos(&mut cstate, 4, &mut ipos);
+        let mut ret = cigar_get_pos(&mut cstate, 4);
         assert_eq!(ret, CigarAtPos::Op(Cigar::Match(4)));
-        ret = cigar_get_pos(&mut cstate, 5, &mut ipos);
+        ret = cigar_get_pos(&mut cstate, 5);
         assert_eq!(ret, CigarAtPos::Op(Cigar::Match(1)))
     }
 
@@ -643,22 +637,76 @@ mod tests {
 
         record.set_pos(104);
 
-        let mut ipos = 0;
+        let mut cstate = CigarState {
+            cig: record.cigar(),
+            icig: 0,
+            iseq: 0,
+            bam_pos: 104,
+            qpos: 0,
+            del: false,
+        };
+
+        let mut ret = cigar_get_pos(&mut cstate, 107);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Match(4)));
+
+        ret = cigar_get_pos(&mut cstate, 108);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Ins(2)));
+
+        ret = cigar_get_pos(&mut cstate, 109);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Match(3)));
+    }
+
+    #[test]
+    pub fn cig_test4() {
+        let mut record = Record::new();
+        record.set(
+            b"read1",
+            Some(&CigarString(vec![
+                Cigar::Match(1),
+                Cigar::Del(4),
+                Cigar::Match(3),
+            ])),
+            b"AATTTT",
+            b"##EEEE",
+            //012345
+        );
+
+        record.set_pos(104);
 
         let mut cstate = CigarState {
             cig: record.cigar(),
             icig: 0,
             iseq: 0,
             bam_pos: 104,
+            qpos: 0,
+            del: false,
         };
 
-        let mut ret = cigar_get_pos(&mut cstate, 107, &mut ipos);
-        assert_eq!(ret, CigarAtPos::Op(Cigar::Match(4)));
+        let mut ret = cigar_get_pos(&mut cstate, 104);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Del(4)));
 
-        ret = cigar_get_pos(&mut cstate, 108, &mut ipos);
-        assert_eq!(ret, CigarAtPos::Op(Cigar::Ins(2)));
+        ret = cigar_get_pos(&mut cstate, 105);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Del(4)));
+        assert_eq!(cstate.qpos, 1);
 
-        ret = cigar_get_pos(&mut cstate, 109, &mut ipos);
+        ret = cigar_get_pos(&mut cstate, 106);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Del(4)));
+        assert_eq!(cstate.qpos, 1);
+
+        ret = cigar_get_pos(&mut cstate, 107);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Del(4)));
+        assert_eq!(cstate.qpos, 1);
+
+        ret = cigar_get_pos(&mut cstate, 108);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Del(4)));
+        assert_eq!(cstate.qpos, 1);
+
+        ret = cigar_get_pos(&mut cstate, 109);
         assert_eq!(ret, CigarAtPos::Op(Cigar::Match(3)));
+        assert_eq!(cstate.qpos, 1);
+
+        ret = cigar_get_pos(&mut cstate, 110);
+        assert_eq!(ret, CigarAtPos::Op(Cigar::Match(3)));
+        assert_eq!(cstate.qpos, 2);
     }
 }

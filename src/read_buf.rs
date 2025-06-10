@@ -52,6 +52,8 @@ impl ReadBuffer {
             icig: 0,
             iseq: 0,
             bam_pos: r.pos() as u32,
+            qpos: 0,
+            del: false,
         };
 
         let plp = PileUp {
