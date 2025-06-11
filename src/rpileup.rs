@@ -57,6 +57,14 @@ pub fn get_base(mut cur_base: u8, is_reverse: bool) -> u8 {
     cur_base
 }
 
+// cap qualitites at max of 126; this also helps avoid non-ascii output
+pub fn get_qual(mut qual: u8) -> u8 {
+    match qual.cmp(&93).is_gt() {
+        true => 126,
+        false => qual + 33,
+    }
+}
+
 pub fn get_base_to_ref(
     mut cur_base: u8,
     ref_coord: u64,
@@ -111,7 +119,7 @@ pub fn write_match(
         seq_buf.push(LAST_POS);
     }
 
-    qual_buf.push(cur_qual);
+    qual_buf.push(get_qual(cur_qual));
 
     Ok(())
 }
