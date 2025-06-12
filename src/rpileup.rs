@@ -155,7 +155,6 @@ pub fn write_ins(
     write_match(cs, r, ipos, pos, seq_buf, qual_buf, refseq)?;
     let mut k = cs.icig + 1;
     let ncig = cs.cig.len();
-    let ipos = ipos + 1;
     while k < ncig {
         match cs.cig[k] {
             Cigar::Pad(l) => {
