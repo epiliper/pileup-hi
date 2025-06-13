@@ -15,7 +15,7 @@ pub struct ReadBuffer {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum BufPushResult {
-    AfterWindow(usize),
+    // AfterWindow(usize),
     Pushed,
     DifferentReference,
     Unmapped,
@@ -43,11 +43,6 @@ impl ReadBuffer {
 
         if r.pos() as usize + self.len - 1 < pos {
             panic!(); // unsorted
-        }
-
-        if r.pos() as usize > pos + self.len - 1 {
-            let window_start = self.c_to_next_window(r.pos(), pos);
-            return BufPushResult::AfterWindow(window_start);
         }
 
         if self.depth >= self.max_depth {

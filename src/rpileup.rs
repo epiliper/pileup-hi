@@ -23,6 +23,7 @@ pub struct PileupIterator {
     pos: usize,
     next_pos: usize,
     max_pos: usize,
+    tid_count: u32,
     show_all: bool,
     rbuf: read_buf::ReadBuffer,
     reader: IndexedReader,
@@ -268,6 +269,7 @@ impl PileupIterator {
         let cur_rec = Record::new();
         let mut refseq = None;
         let min_baseq = params.plp.min_baseq;
+        let max_tid = header.target_count();
 
         let read_filter = ReadFilter::new(
             params.plp.min_mapq,
@@ -285,6 +287,7 @@ impl PileupIterator {
             pos,
             next_pos,
             max_pos,
+            tid_count: max_tid,
             rbuf,
             reader,
             header,
@@ -298,89 +301,15 @@ impl PileupIterator {
         })
     }
 
-    /// Read records in to fill a read buffer spanning the current coordinate window.
-    /// This will loop over records until A) a record is found that starts outside the current
-    /// window, (e.g. faraway coord or different reference).
-    ///
-    /// When a read outside the current window is found, the [PileupIterator] will skip buffer
-    /// filling / pileup generation for all coordinates between the current and the next read's
-    /// start position.
-    pub fn fill_buffer(&mut self) -> Result<(), Error> {
-        let mut ret: read_buf::BufPushResult;
-        // let mut scanned = 0;
-
-        let mut prev_pos = i64::MIN;
-
-        if self.cur_rec.tid() == -1 {
-            if let Some(rec) = self.reader.read(&mut self.cur_rec) {
-                rec?;
-            } else {
-                // if we have no reads at all to set next pos, assume
-                // we've hit the end of the reference, and set next pos to MAX
-                self.next_pos = usize::MAX;
-                return Ok(());
-            }
-        }
+    pub fn auto_loop(&mut self) -> Result<(), Error> {
+        self.init_to_ref()?;
 
         loop {
-            if self.cur_rec.tid() == -1 {
-                break;
+            match self.next()? {
+                IterResult::NoData => break,
+                IterResult::Generated => continue,
+                IterResult::ReferenceEnd => _ = self.init_to_ref()?,
             }
-
-            let r = &self.cur_rec;
-
-            if r.is_unmapped() {
-                match self.reader.read(&mut self.cur_rec) {
-                    None => {
-                        self.cur_rec.set_tid(-1);
-                        break;
-                    }
-                    Some(_) => continue,
-                };
-            }
-
-            if !self.read_filter.check_read(&r) {
-                match self.reader.read(&mut self.cur_rec) {
-                    None => {
-                        self.cur_rec.set_tid(-1);
-                        break;
-                    }
-
-                    Some(_) => continue,
-                };
-            }
-
-            if r.pos() < prev_pos {
-                panic!("UNSORTED BAM! {} {}", r.pos(), prev_pos)
-            }
-
-            prev_pos = r.pos();
-
-            ret = self.rbuf.attempt_push(&r, self.pos, self.tid);
-
-            match ret {
-                read_buf::BufPushResult::Unmapped => panic!(),
-
-                read_buf::BufPushResult::AfterWindow(next_pos) => {
-                    self.next_pos = self.pos + next_pos;
-                    break;
-                }
-
-                read_buf::BufPushResult::DifferentReference => {
-                    break;
-                }
-                read_buf::BufPushResult::Pushed | read_buf::BufPushResult::MaxDepthMet => {
-                    self.cur_rec.set_tid(-1);
-                    match self.reader.read(&mut self.cur_rec) {
-                        Some(Ok(_)) => continue,
-                        None => {
-                            self.cur_rec.set_tid(-1);
-                            break;
-                        }
-                        Some(Err(_)) => panic!(),
-                    }
-                }
-            };
         }
 
         Ok(())
@@ -553,38 +482,55 @@ impl PileupIterator {
     }
 
     pub fn next(&mut self) -> Result<IterResult, Error> {
-        if self.pos >= self.max_pos {
-            return Ok(IterResult::ReferenceEnd);
+        if self.pos > self.max_pos {
+            match self.tid >= self.tid_count {
+                true => return Ok(IterResult::NoData),
+                false => return Ok(IterResult::ReferenceEnd),
+            }
         }
 
-        let mut gen = false;
+        while let Some(read) = self.reader.read(&mut self.cur_rec) {
+            read?;
+            let r = &self.cur_rec;
 
-        // if we are at the next position in the bam where reads are within window range,
-        // resume read intake
-        if self.pos == self.next_pos {
-            self.fill_buffer()?;
+            if r.is_unmapped() {
+                continue;
+            }
+
+            if !self.read_filter.check_read(&r) {
+                continue;
+            }
+
+            // TODO: resolve the int conversion mess
+            if (r.pos() as usize) < self.pos || (r.tid() as u32) < self.tid {
+                panic!("UNSORTED BAM")
+            }
+
+            let ret = self.rbuf.attempt_push(&r, self.pos, self.tid);
+            self.next_pos = r.pos() as usize;
+
+            match ret {
+                read_buf::BufPushResult::Unmapped => panic!(),
+                read_buf::BufPushResult::DifferentReference => return Ok(IterResult::ReferenceEnd),
+                read_buf::BufPushResult::Pushed | read_buf::BufPushResult::MaxDepthMet => {
+                    while self.pos < self.next_pos {
+                        self.set_pileup()?;
+                        self.pos += 1;
+                    }
+
+                    return Ok(IterResult::Generated);
+                }
+            };
         }
 
-        // if we have reads in buffer, attempt to generate plp.
-        if !self.rbuf.rbuf.is_empty() {
-            gen = self.set_pileup()?;
-        }
-
-        // if no reads in buffer overlapped with pos, print empty plp if enabled
-        if !gen && self.show_all {
-            self.write_pileup_str(b'N', 0, 0, 0)?;
-        }
-
-        // if we need to print blank plps for each col,
-        // advance query coord by 1
-        // else, jump to the next coord with reads in range
-        if self.show_all || !self.rbuf.rbuf.is_empty() {
+        while self.pos < self.max_pos {
+            self.set_pileup()?;
             self.pos += 1;
-        } else {
-            self.pos = self.next_pos;
         }
 
-        return Ok(IterResult::Generated);
+        self.pos += 1;
+
+        Ok(IterResult::Generated)
     }
 }
 

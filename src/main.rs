@@ -11,26 +11,8 @@ mod rpileup;
 
 fn _main() -> Result<(), Error> {
     let params = parse_or_quit();
-
     let mut pileup = rpileup::PileupIterator::new(params)?;
-    let mut ret: rpileup::IterResult;
-
-    loop {
-        ret = pileup.init_to_ref()?;
-
-        match ret {
-            rpileup::IterResult::NoData => break,
-            _ => loop {
-                match pileup.next()? {
-                    rpileup::IterResult::ReferenceEnd => break,
-                    rpileup::IterResult::NoData => panic!(),
-                    _ => (),
-                }
-            },
-        }
-    }
-
-    Ok(())
+    pileup.auto_loop()
 }
 
 fn main() {
