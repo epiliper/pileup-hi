@@ -159,7 +159,7 @@ pub fn null_ref_bases(
             set_qual(b, bread, *new_qual)?;
         }
 
-        // println!("Adjusting quality to be ultra-confident {aread} | A POS: {aread} | B POS: {bread} | A QUAL: {} | B QUAL: {}", a.qual()[aread], b.qual()[bread])
+        // println!("Adjusting quality to be ultra-confident A POS: {aread} | B POS: {bread} | A QUAL: {} | B QUAL: {} {}", a.qual()[aread], b.qual()[bread], std::str::from_utf8(a.qname())?)
     }
 
     Ok(())
@@ -174,14 +174,10 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
     assert!(a.pos() <= b.pos());
 
     let mut ap = a.walk_matches();
-    // catch up read A to read B's start pos
-    while ap.genome_pos < b.pos() {
-        match ap.next() {
-            Some(_) => (),
-            None => return Ok(()), // no overlap :(
-        };
-    }
     let mut bp = b.walk_matches();
+
+    // catch up read A to read B's start pos
+    // if no overlap, return early.
 
     // for now: using htslib's hashing heuristic to decide which read to modify, bound to change
     // (maybe)
@@ -190,9 +186,35 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
         false => (amul, bmul) = (false, true),
     }
 
+    // if ap.genome_pos < bp.genome_pos {
+    //     ap.next();
+    //     while ap.genome_pos < bp.genome_pos - 1 {
+    //         println! {"Advancing.... {} {}", ap.genome_pos, bp.genome_pos}
+    //         match ap.next() {
+    //             Some(_) => (),
+    //             None => return Ok(()),
+    //         }
+    //     }
+    // }
+
+    let mut iref = b.pos();
+
     loop {
         match (ap.next(), bp.next()) {
             (Some((mut apos, mut a_iref)), Some((mut bpos, mut b_iref))) => {
+                while ap.genome_pos < iref {
+                    match ap.next() {
+                        Some((ap, ai)) => (apos, a_iref) = (ap, ai),
+                        None => return Ok(()),
+                    }
+                }
+
+                while bp.genome_pos < iref {
+                    match bp.next() {
+                        Some((bp, bi)) => (bpos, b_iref) = (bp, bi),
+                        None => return Ok(()),
+                    }
+                }
                 // check for deletion in read A
                 // println! {"APOS: {apos} BPOS: {bpos} {} {}", ap.after_del(), bp.after_del()} // if a_iref > b_iref && ap.passed_deletion() {
                 if a_iref > b_iref && ap.after_del() {
@@ -204,7 +226,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                         };
 
                         set_qual(b, bpos, new_qual)?;
-                        // println! {"Adjusting to deletion in read A: POS: {bpos} QUAL: {new_qual}, {}", std::str::from_utf8(a.qname())?}
+                        // println! {"Adjusting to deletion in read A: POS: {bpos} QUAL: {new_qual} {}", std::str::from_utf8(a.qname())?}
                         if let Some((n_bpos, n_b_iref)) = bp.next() {
                             b_iref = n_b_iref;
                             bpos = n_bpos;
@@ -225,7 +247,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                         };
 
                         set_qual(a, apos, new_qual)?;
-                        // println! {"Adjusting to deletion in read B: POS: {apos} QUAL: {new_qual}, {}", std::str::from_utf8(a.qname())?}
+                        // println! {"Adjusting to deletion in read B: POS: {apos} QUAL: {new_qual} {}", std::str::from_utf8(a.qname())?}
                         if let Some((n_apos, n_a_iref)) = ap.next() {
                             a_iref = n_a_iref;
                             apos = n_apos;
@@ -246,6 +268,8 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                     &mut base_b,
                     &mut new_qual,
                 )?;
+
+                iref += 1;
             }
 
             _ => break,

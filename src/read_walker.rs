@@ -7,7 +7,6 @@ pub struct IterCigarMatches {
     match_remaining: u32,
     read_pos: usize,
     pub genome_pos: i64,
-    found: bool,
 }
 
 pub trait WalkMatches {
@@ -20,9 +19,8 @@ impl WalkMatches for Record {
             cigar: self.cigar().take().0,
             cigar_index: 0,
             match_remaining: 0,
-            read_pos: 0,
-            genome_pos: self.pos(),
-            found: false,
+            read_pos: usize::MAX,
+            genome_pos: self.pos() - 1,
         }
     }
 }
@@ -30,14 +28,14 @@ impl WalkMatches for Record {
 impl Iterator for IterCigarMatches {
     type Item = (usize, i64);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.match_remaining > 0 {
-            self.match_remaining -= 1;
-            self.genome_pos += 1;
-            self.read_pos += 1;
-            return Some((self.read_pos - 1, self.genome_pos - 1));
-        }
-
         loop {
+            if self.match_remaining > 0 {
+                self.match_remaining -= 1;
+                self.genome_pos += 1;
+                self.read_pos = self.read_pos.wrapping_add(1);
+                return Some((self.read_pos, self.genome_pos));
+            }
+
             if self.cigar_index >= self.cigar.len() {
                 return None;
             }
@@ -46,12 +44,8 @@ impl Iterator for IterCigarMatches {
 
             match entry {
                 Cigar::Equal(l) | Cigar::Match(l) | Cigar::Diff(l) => {
-                    self.found = true;
-                    self.read_pos += 1;
-                    self.genome_pos += 1;
-                    self.match_remaining = l - 1;
+                    self.match_remaining = l;
                     self.cigar_index += 1;
-                    return Some((self.read_pos - 1, self.genome_pos - 1));
                 }
                 Cigar::Ins(l) | Cigar::SoftClip(l) => {
                     self.read_pos += l as usize;
