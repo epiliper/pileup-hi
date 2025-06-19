@@ -421,7 +421,7 @@ impl PileupIterator {
                         )?
                     } else {
                         self.seq_buf.push(b'*');
-                        self.qual_buf.push(qual)
+                        self.qual_buf.push(get_qual(qual))
                     }
                     ndel += 1;
                 }
