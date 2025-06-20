@@ -230,11 +230,10 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
                     return Ok(());
                 }
             }
-        };
-
+        }
         // check for deletion in read B
         // if b_iref > a_iref && bp.passed_deletion() {
-        if b_iref > a_iref && bp.after_del() {
+        else if b_iref > a_iref && bp.after_del() {
             while a_iref < b_iref {
                 new_qual = if amul {
                     (a.qual()[apos] as f32 * 0.8) as u8
