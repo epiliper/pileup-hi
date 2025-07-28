@@ -1,12 +1,13 @@
+use crate::bamio::BamReader;
 use crate::params::Params;
 use crate::pileup::CigarState;
 use crate::read_buf;
 use crate::read_filter::ReadFilter;
 use crate::refseq::RefSeq;
+
 use anyhow::{Context, Error};
-use num_cpus;
 use rust_htslib::bam::record::Cigar;
-use rust_htslib::bam::{ext::BamRecordExtensions, HeaderView, IndexedReader, Read, Record};
+use rust_htslib::bam::{ext::BamRecordExtensions, Record};
 use std::io::Write;
 
 const UNINIT_POS: i64 = i64::MAX - 1;
@@ -26,8 +27,7 @@ pub struct PileupIterator {
     tid_count: i32,
     show_all: bool,
     rbuf: read_buf::ReadBuffer,
-    reader: IndexedReader,
-    header: HeaderView,
+    reader: BamReader,
     refseq: Option<RefSeq>,
     seq_buf: Vec<u8>,
     qual_buf: Vec<u8>,
@@ -260,16 +260,14 @@ impl PileupIterator {
     pub fn new(params: Params) -> Result<Self, Error> {
         let tid = params.inp.tid.unwrap_or(UNINIT_TID);
         let pos @ next_pos @ max_pos = params.inp.pos.unwrap_or(UNINIT_POS);
-        let mut reader = IndexedReader::from_path(params.inp.input)?;
-        reader.set_threads(num_cpus::get())?;
+        let reader = BamReader::new(&params.inp)?;
         let rbuf = read_buf::ReadBuffer::new(params.inp.depth, params.plp.disable_overlaps);
-        let header = reader.header().clone();
         let show_all = params.plp.show_empty_coords;
         let (seq_buf, qual_buf) = (Vec::with_capacity(500), Vec::with_capacity(500));
         let cur_rec = Record::new();
         let mut refseq = None;
         let min_baseq = params.plp.min_baseq;
-        let max_tid = header.target_count() as i32;
+        let max_tid = reader.max_tid;
 
         let read_filter = ReadFilter::new(
             params.plp.min_mapq,
@@ -290,7 +288,6 @@ impl PileupIterator {
             tid_count: max_tid,
             rbuf,
             reader,
-            header,
             min_baseq,
             read_filter,
             show_all,
@@ -322,7 +319,7 @@ impl PileupIterator {
         nins: usize,
         ndel: usize,
     ) -> Result<(), Error> {
-        print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.header.tid2name(self.tid as u32))?, self.pos + 1, char::from(ref_base), nbases + nins + ndel }
+        print! {"{}\t{}\t{}\t{}\t", std::str::from_utf8(self.reader.header.tid2name(self.tid as u32))?, self.pos + 1, char::from(ref_base), nbases + nins + ndel }
         if self.seq_buf.is_empty() {
             print! {"*\t"}
         } else {
@@ -462,29 +459,35 @@ impl PileupIterator {
             self.tid += 1;
         }
 
-        let tlen = self.header.target_len(self.tid as u32).with_context(|| {
-            format!(
-                "Failed to get target length for {}",
-                std::str::from_utf8(self.header.tid2name(self.tid as u32)).unwrap()
-            )
-        })?;
+        let tlen = self
+            .reader
+            .header
+            .target_len(self.tid as u32)
+            .with_context(|| {
+                format!(
+                    "Failed to get target length for {}",
+                    std::str::from_utf8(self.reader.header.tid2name(self.tid as u32)).unwrap()
+                )
+            })?;
 
         if let Some(r) = self.refseq.as_mut() {
             // right now we just get the entire reference sequence.
             // Next step will be to load it in windows.
-            let tidname = std::str::from_utf8(self.header.tid2name(self.tid as u32));
+            let tidname = std::str::from_utf8(self.reader.header.tid2name(self.tid as u32));
             r.load_seq(tidname?, 0, tlen)?
         }
 
         self.max_pos = tlen as i64;
         self.pos = 0;
         self.next_pos = 0;
-        self.reader.fetch((self.tid, 0, u32::MAX))?;
+
+        // self.reader.fetch((self.tid, 0, u32::MAX))?;
+        self.reader.init_to_ref(self.tid as u32)?;
         Ok(IterResult::Generated)
     }
 
     pub fn next(&mut self) -> Result<IterResult, Error> {
-        while let Some(read) = self.reader.read(&mut self.cur_rec) {
+        while let Some(read) = self.reader.read_no_alloc(&mut self.cur_rec) {
             read?;
             let r = &self.cur_rec;
 

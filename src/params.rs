@@ -27,6 +27,9 @@ pub struct InputParams {
     #[arg(index = 1)]
     pub input: String,
 
+    #[arg(short = 't', long = "--threads", default_value_t = num_cpus::get())]
+    pub threads: usize,
+
     #[arg(short = 'f', long = "fasta-ref")]
     pub refseq: Option<String>,
 
