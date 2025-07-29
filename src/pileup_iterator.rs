@@ -1,18 +1,18 @@
 use crate::bamio::BamReader;
 use crate::params::Params;
-use crate::pileup::CigarState;
 use crate::pileup_writer::PileupWriter;
 use crate::read_buf;
 use crate::read_filter::ReadFilter;
 use crate::refseq::RefSeq;
+use crate::utils::{cigar_get_pos, CigarAtPos};
 
 use anyhow::{Context, Error};
 use rust_htslib::bam::record::Cigar;
 use rust_htslib::bam::{ext::BamRecordExtensions, Record};
 use std::cell::RefCell;
 
-const UNINIT_POS: i64 = i64::MAX - 1;
-const UNINIT_TID: i32 = i32::MAX - 1;
+pub const UNINIT_POS: i64 = i64::MAX - 1;
+pub const UNINIT_TID: i32 = i32::MAX - 1;
 
 /// A counter class to track the number of reads differing from the reference at a given pileup.
 /// Holds the qualities of all bases, and the number of reads with ref-matching vs differing bases.
@@ -65,9 +65,10 @@ impl PileupPosStore {
 pub struct PileupIterator {
     tid: i32,
     pos: i64,
+    min_pos: i64,
     next_pos: i64,
-    store: PileupPosStore,
     max_pos: i64,
+    store: PileupPosStore,
     tid_count: i32,
     rbuf: read_buf::ReadBuffer,
     show_all: bool,
@@ -85,103 +86,10 @@ pub enum IterResult {
     NoData,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum CigarAtPos {
-    BeforePos(),
-    Op(Cigar),
-    BaseEmpty(),
-}
-
-/// Get the cigar operation in a read at a given index. Intended to mimic cigar_resolver2 from
-/// htslib.
-///
-/// If the queried index is at the end of a match operation, the function will check if the next
-/// operation is a deletion or insertion, and return the corresponding operation if so.
-///
-/// For example:
-///
-/// if return == [CigarAtPos(Cigar::Del(l))], then current position is [Cigar::Match] but the very next
-/// one is [Cigar::Del].
-pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
-    let cig = &cs.cig;
-    let ncig = cig.len();
-    let mut op: Cigar;
-    while cs.bam_pos <= pos {
-        if cs.icig >= ncig {
-            // this should never happen, since we check cigars beforehand to at least end
-            // at the queried coordinate, if not pass over it.
-            return CigarAtPos::BeforePos();
-        }
-
-        op = cig[cs.icig];
-        match op {
-            Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
-                let end_pos = cs.bam_pos + len - 1;
-
-                if end_pos < pos {
-                    cs.bam_pos += len;
-                    cs.iseq += len;
-                    cs.icig += 1;
-                    continue;
-                }
-
-                cs.del = false;
-                cs.qpos = pos as usize - cs.bam_pos as usize + cs.iseq as usize;
-                if end_pos == pos && cs.icig + 1 < ncig {
-                    let next_op = cig[cs.icig + 1];
-
-                    match next_op {
-                        Cigar::Ins(_) => return CigarAtPos::Op(next_op),
-                        Cigar::Del(_) => return CigarAtPos::Op(next_op),
-                        _ => (),
-                    }
-                }
-                return CigarAtPos::Op(Cigar::Match(len));
-            }
-
-            Cigar::Ins(len) | Cigar::SoftClip(len) => {
-                cs.iseq += len;
-                cs.icig += 1;
-                continue;
-            }
-
-            Cigar::Del(len) => {
-                let end_pos = cs.bam_pos + len - 1;
-                if end_pos < pos {
-                    cs.bam_pos += len;
-                    cs.icig += 1;
-                    continue;
-                }
-
-                // this coordinate comes after we already indicated the deletion, so
-                // mark ipos to avoid repeating the deletion in this and subsequent plp cols
-                cs.del = true;
-                // cs.qpos = (cs.iseq + len) as usize;
-                cs.qpos = cs.iseq as usize;
-                return CigarAtPos::Op(op);
-            }
-
-            Cigar::RefSkip(len) => {
-                let end_pos = cs.bam_pos + len - 1;
-                if end_pos < pos {
-                    cs.bam_pos += len;
-                    cs.icig += 1;
-                    continue;
-                }
-
-                return CigarAtPos::BaseEmpty();
-            }
-            _ => (),
-        }
-    }
-
-    CigarAtPos::BaseEmpty()
-}
-
 impl PileupIterator {
     pub fn new(params: Params) -> Result<Self, Error> {
         let tid = params.inp.tid.unwrap_or(UNINIT_TID);
-        let pos @ next_pos @ max_pos = params.inp.pos.unwrap_or(UNINIT_POS);
+        let min_pos @ pos @ next_pos @ max_pos = params.inp.pos.unwrap_or(UNINIT_POS);
         let reader = BamReader::new(&params.inp)?;
         let pileup_writer = PileupWriter::new();
         let rbuf = read_buf::ReadBuffer::new(params.inp.depth, params.plp.disable_overlaps);
@@ -207,6 +115,7 @@ impl PileupIterator {
         Ok(Self {
             tid,
             pos,
+            min_pos,
             next_pos,
             max_pos,
             tid_count: max_tid,
@@ -255,6 +164,7 @@ impl PileupIterator {
                 drop(r);
                 drop(raw);
                 self.rbuf.depth -= 1;
+                self.min_pos = self.pos;
                 continue;
             }
 
@@ -443,6 +353,7 @@ impl PileupIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pileup::CigarState;
     use rust_htslib::bam::{record::CigarString, Record};
 
     #[test]
