@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use bio::alignment::{pairwise::Aligner, Alignment};
-use bio::scores::blosum62;
+use anyhow::Error;
+use minimap2::{Aligner, Built, Mapping};
 use rust_htslib::bam::{
     record::{Cigar, CigarString},
     Record,
@@ -9,12 +9,60 @@ use rust_htslib::bam::{
 
 use crate::pileup_iterator::UNINIT_POS;
 
-pub type Remapper = Aligner<fn(u8, u8) -> i32>;
+pub type Remapper = Aligner<Built>;
+
+#[derive(Debug)]
+pub struct AlignmentPayload {
+    pos: i32,
+    mapq: u32,
+    cigarstr: String,
+}
 
 pub struct Realigner {
     prev_w_start: i64,
     prev_w_end: i64,
     aligner: Remapper,
+    refname: Vec<u8>,
+}
+
+/// Adjust an existing read with updated fields aligned from a realignment.
+pub fn set_read_to_realign(r: &mut Record, alp: AlignmentPayload) {
+    println! {"BEFORE ------------ MAPQ: {} START: {} CIGAR{}", r.mapq(), r.pos(), r.cigar()}
+    r.set_mapq(alp.mapq as u8);
+    r.set_pos(alp.pos as i64);
+    r.set_cigar(Some(&parse_cigar_string(&alp.cigarstr)));
+    println! {"AFTER ------------- MAPQ: {} START: {} CIGAR{}", r.mapq(), r.pos(), r.cigar()}
+}
+
+/// remove supplementary maps, get only one alignment per read.
+/// this is meant to be called on a [Vec<Mapping>] from a single read
+pub fn filter_maps(mut maps: Vec<Mapping>) -> AlignmentPayload {
+    let mut aln: Vec<AlignmentPayload>;
+    println! {"MAPS: {}", maps.len()}
+
+    aln = maps
+        .drain(..)
+        .filter_map(|m| create_alignment_payload(m))
+        .collect();
+
+    assert_eq!(aln.len(), 1);
+    aln.remove(0)
+}
+
+/// Create the necessary information for a read to be modified following realignment.
+pub fn create_alignment_payload(map: Mapping) -> Option<AlignmentPayload> {
+    if map.is_supplementary || !map.is_primary {
+        return None;
+    }
+    if map.alignment.is_none() {
+        return None;
+    }
+
+    Some(AlignmentPayload {
+        pos: map.target_start,
+        mapq: map.mapq,
+        cigarstr: map.alignment.unwrap().cigar_str.unwrap(),
+    })
 }
 
 fn parse_cigar_string(cigar_str: &str) -> CigarString {
@@ -45,60 +93,130 @@ fn parse_cigar_string(cigar_str: &str) -> CigarString {
     CigarString(ops)
 }
 
-pub struct RefWindow<'a> {
-    seq: &'a [u8],
-    start_offset: i64,
+pub enum AlignerReference<'a> {
+    Sequence(&'a [u8]),
+    Fasta(&'a str),
 }
 
 impl Realigner {
-    pub fn new() -> Self {
-        let aligner: Remapper = Aligner::new(-5, -1, blosum62);
+    pub fn new(reference: AlignerReference, refname: Option<&str>) -> Result<Self, Error> {
+        let aligner: Aligner<Built>;
+        let aligner_build = Aligner::builder()
+            .with_cigar()
+            .sr()
+            .with_sam_hit_only()
+            .with_index_threads(num_cpus::get());
 
-        Self {
+        match reference {
+            AlignerReference::Fasta(file) => {
+                aligner = aligner_build
+                    .with_index(file, None)
+                    .map_err(|e| Error::msg(e))?
+            }
+            AlignerReference::Sequence(bytes) => {
+                aligner = aligner_build.with_seq(bytes).map_err(|e| Error::msg(e))?
+            }
+        };
+
+        let refname = refname
+            .unwrap_or("REF")
+            .as_bytes()
+            .iter()
+            .map(|x| *x)
+            .collect();
+
+        Ok(Self {
             prev_w_start: 0,
             prev_w_end: UNINIT_POS,
             aligner,
-        }
+            refname,
+        })
     }
 
-    /// update the min and max window to avoid repeating work.
-    pub fn realign_region(&mut self, ref_window: RefWindow, mut records: Vec<&mut Record>) {
-        let mut aln: Alignment = Alignment::default();
+    pub fn realign_region(&mut self, mut records: Vec<Record>) -> Result<(), Error> {
+        let mut aln: AlignmentPayload;
+        let mut maps: Vec<Mapping>;
 
-        records.iter_mut().for_each(|rec| {
-            aln = self
+        for rec in records.iter_mut() {
+            maps = self
                 .aligner
-                .semiglobal(ref_window.seq, &rec.seq().as_bytes());
-            rec.set_cigar(Some(&parse_cigar_string(&aln.cigar(false))));
-            rec.set_pos(aln.xstart as i64 + ref_window.start_offset);
-            println!{"{}\n YSTART: {}\n XSTART: {}", aln.pretty(ref_window.seq, &rec.seq().as_bytes(), 50), aln.ystart, aln.xstart}
-        })
+                .map(
+                    // rec.seq().as_bytes().as_slice(),
+                    rec.seq().as_bytes().as_slice(),
+                    true,
+                    false,
+                    None,
+                    None,
+                    Some(self.refname.as_slice()),
+                )
+                .expect("failed to realign");
+
+            aln = filter_maps(maps);
+            println! {"Alignment: {:?}", aln}
+            set_read_to_realign(rec, aln);
+        }
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
     use rust_htslib::bam::Record;
+
+    fn get_test_dir() -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("test_data");
+        path
+    }
+
+    fn get_test_file(test_file: &str) -> PathBuf {
+        let mut path = get_test_dir();
+        path.push(test_file);
+        path
+    }
+
+    fn get_fastq_sequences(test_file: &str) -> Vec<Vec<u8>> {
+        let mut out = vec![];
+        let f = get_test_file(test_file);
+        let mut lines = BufReader::new(File::open(f).unwrap()).lines();
+
+        while let (Some(_header), Some(seq), Some(_plus), Some(_qual)) =
+            (lines.next(), lines.next(), lines.next(), lines.next())
+        {
+            out.push(seq.unwrap().as_bytes().into());
+        }
+
+        out
+    }
+
+    fn bam_from_fastq(test_file: &str) -> Vec<Record> {
+        let reads = get_fastq_sequences(test_file);
+        let records = reads
+            .iter()
+            .map(|r| {
+                let mut record = Record::new();
+                record.set(b"4", None, r, vec![255 as u8; r.len()].as_slice());
+                record
+            })
+            .collect();
+
+        records
+    }
 
     #[test]
     fn test1() {
-        let mut record = Record::new();
-        record.set(
-            b"read1", None, b"ATCATT", b"######",
-            //012345
-        );
+        let ref_file = get_test_file("cDNA.fasta").to_str().unwrap().to_string();
+        // let ref_reads = get_fastq_sequences("cDNA_reads.fq");
+        let ref_records = bam_from_fastq("cDNA_reads.fq");
 
-        record.set_pos(10);
-
-        let seq = b"GATCATTATGATAT";
-        let rw = RefWindow {
-            seq: &seq[2..],
-            start_offset: 2,
-        };
-
-        let mut realigner = Realigner::new();
-        realigner.realign_region(rw, vec![&mut record]);
-        assert_eq!(record.pos(), 2);
+        let mut realigner = Realigner::new(AlignerReference::Fasta(&ref_file), None).unwrap();
+        realigner.realign_region(ref_records).unwrap();
     }
 }

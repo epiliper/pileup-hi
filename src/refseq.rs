@@ -16,6 +16,7 @@ impl RefSeq {
         self.empty
     }
 
+    // TODO: use regular fasta reader to avoid using rust_bio
     pub fn from_file(file: String) -> Result<Self, Error> {
         // check if idx exists
         let idx_name = format! {"{file}.fai"};
