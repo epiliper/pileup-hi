@@ -16,46 +16,71 @@ pub const UNINIT_TID: i32 = i32::MAX - 1;
 
 /// A counter class to track the number of reads differing from the reference at a given pileup.
 /// Holds the qualities of all bases, and the number of reads with ref-matching vs differing bases.
-pub struct PileupPosStore {
+///
+/// [nmatch] = number of reads consuming reference at this positiion, which includes nalt.
+/// [nalt] = number of nmatch reads that differ from reference sequence
+/// [ndel] = number of reads with deletion following this position
+/// [nins] = number of reads with insertion following this position
+pub struct PileupPosition {
     quals: Vec<u8>,
-    nref: u32,
+    nmatch: u32,
     nalt: u32,
-    register: fn(&mut Self, u8, bool),
+    ndel: u32,
+    nins: u32,
+    ref_base: u8,
+    register: fn(&mut Self, u8, u8),
 }
 
-impl PileupPosStore {
-    fn _uptake(&mut self, qual: u8, matches_ref: bool) {
+impl PileupPosition {
+    fn _uptake(&mut self, qual: u8, base: u8) {
         self.quals.push(qual);
 
-        match matches_ref {
-            true => self.nref += 1,
+        match base == self.ref_base {
+            true => (),
             false => self.nalt += 1,
         }
     }
 
-    fn _ignore(&mut self, _qual: u8, _matches_ref: bool) {}
+    fn _ignore(&mut self, _qual: u8, base: u8) {
+        match base == self.ref_base {
+            true => (),
+            false => self.nalt += 1,
+        }
+    }
 
     pub fn new(gather_align_metrics: bool) -> Self {
         let uptake_method = match gather_align_metrics {
-            true => PileupPosStore::_uptake,
-            false => PileupPosStore::_ignore,
+            true => PileupPosition::_uptake,
+            false => PileupPosition::_ignore,
         };
 
         Self {
             quals: Vec::new(),
-            nref: 0,
+            nmatch: 0,
             nalt: 0,
+            ndel: 0,
+            nins: 0,
+            ref_base: b'N',
             register: uptake_method,
         }
     }
-    pub fn expose(&self) {
-        println! {"{:?}", self.quals}
+
+    pub fn is_active(&mut self, floor: f32, ceil: f32) -> bool {
+        let ratio = self.nalt as f32 / (self.nalt + self.nmatch) as f32;
+        ratio >= floor && ratio <= ceil
+    }
+
+    pub fn depth(&mut self) -> u32 {
+        self.ndel + self.nins + self.nmatch
     }
 
     pub fn clear(&mut self) {
         self.quals.clear();
-        self.nref = 0;
+        self.nmatch = 0;
         self.nalt = 0;
+        self.nins = 0;
+        self.ndel = 0;
+        self.nmatch = 0;
     }
 }
 
@@ -68,7 +93,7 @@ pub struct PileupIterator {
     min_pos: i64,
     next_pos: i64,
     max_pos: i64,
-    store: PileupPosStore,
+    store: PileupPosition,
     tid_count: i32,
     rbuf: read_buf::ReadBuffer,
     show_all: bool,
@@ -94,7 +119,7 @@ impl PileupIterator {
         let pileup_writer = PileupWriter::new();
         let rbuf = read_buf::ReadBuffer::new(params.inp.depth, params.plp.disable_overlaps);
 
-        let store = PileupPosStore::new(params.plp.indel_realign);
+        let store = PileupPosition::new(params.plp.indel_realign);
 
         let show_all = params.plp.show_empty_coords;
         let cur_rec = Record::new();
@@ -145,6 +170,13 @@ impl PileupIterator {
         Ok(())
     }
 
+    pub fn establish_position_context(&mut self) -> Result<(), Error> {
+        self.store.clear();
+        self.store.ref_base = self.refseq.borrow().get_base(self.pos as u64)?;
+
+        Ok(())
+    }
+
     /// Generate a pileup from all bases passing the minimum quality filter at a given reference
     /// position.
     pub fn set_pileup(&mut self) -> Result<bool, Error> {
@@ -152,10 +184,8 @@ impl PileupIterator {
         let mut generated = false;
         let mut qual: u8;
 
-        let mut ndel @ mut nins @ mut nbases = 0;
-
-        let mut refseq = self.refseq.try_borrow_mut()?;
-        let refbase = refseq.get_base(self.pos as u64)?;
+        self.establish_position_context()?;
+        let mut refseq = self.refseq.borrow_mut();
 
         for raw in self.rbuf.rbuf.drain(..) {
             let mut r = raw.borrow_mut();
@@ -190,11 +220,11 @@ impl PileupIterator {
                         &r.rec,
                         r.cstate.qpos as u32,
                         self.pos,
-                        refbase,
+                        self.store.ref_base,
                     )?;
 
-                    nbases += 1;
-                    (self.store.register)(&mut self.store, qual, refbase == readbase);
+                    self.store.nmatch += 1;
+                    (self.store.register)(&mut self.store, qual, readbase);
                 }
 
                 CigarAtPos::Op(Cigar::Ins(_)) => {
@@ -202,13 +232,13 @@ impl PileupIterator {
                         &r.rec,
                         r.cstate.qpos as u32,
                         self.pos,
-                        refbase,
+                        self.store.ref_base,
                     )?;
 
                     self.pileup_writer
                         .write_insertion(&r.cstate, &r.rec, r.cstate.qpos as u32)?;
-                    nins += 1;
-                    (self.store.register)(&mut self.store, qual, false);
+                    self.store.nins += 1;
+                    (self.store.register)(&mut self.store, qual, readbase);
                 }
 
                 CigarAtPos::Op(Cigar::Del(l)) => {
@@ -217,7 +247,7 @@ impl PileupIterator {
                             &r.rec,
                             r.cstate.qpos as u32,
                             self.pos,
-                            refbase,
+                            self.store.ref_base,
                         )?;
 
                         let del_seq = refseq
@@ -228,8 +258,9 @@ impl PileupIterator {
                     } else {
                         self.pileup_writer.write_deletion(qual);
                     }
-                    ndel += 1;
-                    (self.store.register)(&mut self.store, qual, false);
+
+                    self.store.ndel += 1;
+                    (self.store.register)(&mut self.store, qual, readbase);
                 }
 
                 CigarAtPos::BeforePos() => {
@@ -248,16 +279,15 @@ impl PileupIterator {
             drop(r);
 
             self.rbuf.backup_buf.push(raw);
-            self.store.clear();
         }
 
-        if self.show_all || nbases + nins + ndel > 0 {
+        let depth = self.store.depth();
+
+        if self.show_all || depth > 0 {
             self.pileup_writer.write_pileup_str(
-                refbase,
+                self.store.ref_base,
                 self.pos,
-                nbases,
-                nins,
-                ndel,
+                depth,
                 &self.reader.cur_ref,
             )?;
             generated = true;

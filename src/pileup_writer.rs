@@ -127,12 +127,10 @@ impl PileupWriter {
         &mut self,
         ref_base: u8,
         plp_ref_pos: i64,
-        nbases: usize,
-        nins: usize,
-        ndel: usize,
+        depth: u32,
         tidname: &str,
     ) -> Result<(), Error> {
-        print! {"{}\t{}\t{}\t{}\t", tidname, plp_ref_pos + 1, char::from(ref_base), nbases + nins + ndel }
+        print! {"{}\t{}\t{}\t{}\t", tidname, plp_ref_pos + 1, char::from(ref_base), depth }
 
         if self.seq_buf.is_empty() {
             print! {"*\t"}
