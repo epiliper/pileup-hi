@@ -55,7 +55,7 @@ pub struct PileupParams {
     #[arg(short = 'a')]
     pub show_empty_coords: bool,
 
-    #[arg(short = 'i')]
+    #[arg(short = 'i', long = "realign-indels")]
     pub indel_realign: bool,
 
     #[arg(long = "aa")]

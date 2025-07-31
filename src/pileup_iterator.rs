@@ -3,6 +3,7 @@ use crate::params::Params;
 use crate::pileup_writer::PileupWriter;
 use crate::read_buf;
 use crate::read_filter::ReadFilter;
+use crate::realigner::{AlignerReference, Realigner};
 use crate::refseq::RefSeq;
 use crate::utils::{cigar_get_pos, CigarAtPos};
 
@@ -67,9 +68,12 @@ impl PileupPosition {
 
     /// Is a current pileup position in need of reassembly, i.e. is there a significant amount of
     /// differences (indels, substitutions) relative to reference?
-    pub fn is_active(&mut self, floor: f32, ceil: f32, denom: f32) -> bool {
+    pub fn is_active(&mut self, floor: f32, ceil: f32, denom: f32) -> Option<f32> {
         let ratio = (self.nalt + self.ndel + self.nins) as f32 / denom;
-        ratio >= floor && ratio <= ceil
+        match (ratio >= floor && ratio <= ceil) && (self.nins + self.ndel) as f32 / denom > 0.1 {
+            true => Some(ratio),
+            false => None,
+        }
     }
 
     pub fn depth(&mut self) -> u32 {
@@ -78,7 +82,6 @@ impl PileupPosition {
 
     pub fn clear(&mut self) {
         self.quals.clear();
-        self.nmatch = 0;
         self.nalt = 0;
         self.nins = 0;
         self.ndel = 0;
@@ -98,6 +101,7 @@ pub struct PileupIterator {
     store: PileupPosition,
     tid_count: i32,
     rbuf: read_buf::ReadBuffer,
+    realigner: Option<Realigner>,
     show_all: bool,
     pileup_writer: PileupWriter,
     reader: BamReader,
@@ -121,7 +125,10 @@ impl PileupIterator {
         let pileup_writer = PileupWriter::new();
         let rbuf = read_buf::ReadBuffer::new(params.inp.depth, params.plp.disable_overlaps);
 
-        let store = PileupPosition::new(params.plp.indel_realign);
+        let (store, realigner) = match params.plp.indel_realign {
+            true => (PileupPosition::new(true), Some(Realigner::build_empty()?)),
+            false => (PileupPosition::new(false), None),
+        };
 
         let show_all = params.plp.show_empty_coords;
         let cur_rec = Record::new();
@@ -137,13 +144,15 @@ impl PileupIterator {
 
         let refseq = match params.inp.refseq {
             Some(ref_file) => RefCell::new(RefSeq::from_file(ref_file)?),
-            None => RefCell::new(RefSeq::empty()),
+            None => RefCell::new(RefSeq::new_empty()),
         };
+
         Ok(Self {
             tid,
             pos,
             min_pos,
             next_pos,
+            realigner,
             max_pos,
             tid_count: max_tid,
             rbuf,
@@ -261,7 +270,6 @@ impl PileupIterator {
                     }
 
                     self.store.ndel += 1;
-                    // (self.store.register)(&mut self.store, qual, readbase);
                 }
 
                 CigarAtPos::BeforePos() => {
@@ -283,7 +291,6 @@ impl PileupIterator {
         }
 
         let depth = self.store.depth();
-        if depth > 0 && self.store.is_active(0.1, 0.9, depth as f32) {}
 
         if self.show_all || depth > 0 {
             self.pileup_writer.write_pileup_str(
@@ -293,6 +300,13 @@ impl PileupIterator {
                 &self.reader.cur_ref,
             )?;
             generated = true;
+        }
+
+        if let Some(realigner) = &mut self.realigner {
+            if let Some(ratio) = self.store.is_active(0.1, 0.9, depth as f32) {
+                println! {"REALIGNING {} {} {} {} {}", self.pos, ratio, self.store.ndel, self.store.nalt, self.store.nmatch};
+                realigner.realign_region_plp(&mut self.rbuf.backup_buf)?;
+            }
         }
 
         self.rbuf.reset();
@@ -324,6 +338,14 @@ impl PileupIterator {
             // right now we just get the entire reference sequence.
             // Next step will be to load it in windows.
             refseq.load_seq(&self.reader.cur_ref, 0, tlen)?
+        }
+
+        if let Some(realigner) = &mut self.realigner {
+            assert!(!refseq.is_empty());
+            realigner.init_to_ref(
+                AlignerReference::Sequence(refseq.yield_seq_slice()),
+                Some(&self.reader.cur_ref),
+            )?;
         }
 
         self.max_pos = tlen as i64;

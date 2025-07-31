@@ -3,6 +3,8 @@ use rust_htslib::bam::{
     Record,
 };
 
+use std::{rc::Rc, cell::RefCell};
+
 pub struct CigarState {
     pub cig: CigarStringView,
     pub icig: usize,  // position in cigar string
@@ -12,10 +14,12 @@ pub struct CigarState {
     pub del: bool,
 }
 
-pub struct PileUp {
+pub struct Pileup {
     pub rec: Record,
     pub cstate: CigarState,
 }
+
+pub type PileupRef = Rc<RefCell<Pileup>>;
 
 pub fn cigar2rlen(r: &Record) -> i64 {
     let mut len = 0;

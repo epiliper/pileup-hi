@@ -43,7 +43,7 @@ impl RefSeq {
         })
     }
 
-    pub fn empty() -> Self {
+    pub fn new_empty() -> Self {
         Self {
             wstart: 0,
             wend: 0,
@@ -51,6 +51,10 @@ impl RefSeq {
             reader: None,
             empty: true,
         }
+    }
+
+    pub fn yield_seq_slice(&self) -> &[u8] {
+        &self.seq.as_slice()
     }
 
     pub fn load_seq(&mut self, t_name: &str, start: u64, stop: u64) -> Result<(), Error> {
