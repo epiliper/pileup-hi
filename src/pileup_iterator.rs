@@ -1,4 +1,4 @@
-use crate::bamio::BamReader;
+use crate::bamio::{BamReader, BamWriter};
 use crate::params::Params;
 use crate::pileup_writer::PileupWriter;
 use crate::read_buf;
@@ -109,6 +109,7 @@ pub struct PileupIterator {
     read_filter: ReadFilter,
     cur_rec: Record,
     min_baseq: u8,
+    read_discard: RefCell<BamWriter>,
 }
 
 pub enum IterResult {
@@ -123,12 +124,18 @@ impl PileupIterator {
         let min_pos @ pos @ next_pos @ max_pos = params.inp.pos.unwrap_or(UNINIT_POS);
         let reader = BamReader::new(&params.inp)?;
         let pileup_writer = PileupWriter::new();
-        let rbuf = read_buf::ReadBuffer::new(params.inp.depth, params.plp.disable_overlaps);
 
         let (store, realigner) = match params.plp.indel_realign {
             true => (PileupPosition::new(true), Some(Realigner::build_empty()?)),
             false => (PileupPosition::new(false), None),
         };
+
+        let read_discard = match params.outp.output_realigned {
+            Some(output) => RefCell::new(BamWriter::new_from_template(&reader.header, &output)?),
+            None => RefCell::new(BamWriter::void(&reader.header)?),
+        };
+
+        let rbuf = read_buf::ReadBuffer::new(params.inp.depth, params.plp.disable_overlaps);
 
         let show_all = params.plp.show_empty_coords;
         let cur_rec = Record::new();
@@ -160,6 +167,7 @@ impl PileupIterator {
             reader,
             store,
             min_baseq,
+            read_discard,
             read_filter,
             show_all,
             refseq,
@@ -197,11 +205,13 @@ impl PileupIterator {
 
         self.establish_position_context()?;
         let mut refseq = self.refseq.borrow_mut();
+        let mut discard = self.read_discard.borrow_mut();
 
         for raw in self.rbuf.rbuf.drain(..) {
             let mut r = raw.borrow_mut();
 
             if r.rec.reference_end() - 1 < self.pos as i64 {
+                discard.write_record(&r.rec)?;
                 drop(r);
                 drop(raw);
                 self.rbuf.depth -= 1;
@@ -272,14 +282,8 @@ impl PileupIterator {
                     self.store.ndel += 1;
                 }
 
-                CigarAtPos::BeforePos() => {
-                    panic!(
-                        "{} {} {}",
-                        r.rec.is_unmapped(),
-                        self.pos,
-                        r.rec.reference_end() - 1
-                    );
-                }
+                // choosing to ignore this for now.
+                CigarAtPos::BeforePos() => (),
 
                 CigarAtPos::BaseEmpty() => (),
                 _ => panic!(),

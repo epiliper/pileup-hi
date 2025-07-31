@@ -1,10 +1,9 @@
 #![allow(dead_code)]
 
 use anyhow::Error;
-use minimap2::{Aligner, Built, Mapping};
+use minimap2::{Aligner, Built};
 use rust_htslib::bam::{
-    record::{Cigar, CigarString},
-    Record,
+    Header, HeaderView, Record,
 };
 
 use crate::pileup::PileupRef;
@@ -13,88 +12,31 @@ pub type Remapper = Aligner<Built>;
 
 const DUMMY_REFERENCE: &[u8; 3] = b"ACT";
 
-#[derive(Debug)]
-pub struct AlignmentPayload {
-    pos: i32,
-    mapq: u32,
-    cigarstr: String,
-    tid: i32,
-}
-
 pub struct Realigner {
     aligner: Remapper,
     refname: Vec<u8>,
-}
-
-/// Adjust an existing read with updated fields aligned from a realignment.
-pub fn set_read_to_realign(r: &mut Record, alp: AlignmentPayload) {
-    // println! {"BEFORE ------------ MAPQ: {} START: {} CIGAR{}", r.mapq(), r.pos(), r.cigar()}
-    r.set_mapq(alp.mapq as u8);
-    r.set_pos(alp.pos as i64);
-    r.set_cigar(Some(&parse_cigar_string(&alp.cigarstr)));
-    r.set_tid(alp.tid);
-    r.unset_unmapped();
-    // println! {"AFTER ------------- MAPQ: {} START: {} CIGAR{}", r.mapq(), r.pos(), r.cigar()}
+    headerview: Option<HeaderView>,
 }
 
 /// remove supplementary maps, get only one alignment per read.
 /// this is meant to be called on a [Vec<Mapping>] from a single read
-pub fn filter_maps(maps: &mut Vec<Mapping>) -> AlignmentPayload {
-    let mut aln: Vec<AlignmentPayload>;
+pub fn filter_maps(maps: &mut Vec<Record>) -> Record {
+    let mut aln: Vec<Record>;
     // println!{"{:?}", maps}
 
     aln = maps
         .drain(..)
-        .filter_map(|m| create_alignment_payload(m))
+        .filter_map(|m| {
+            if !m.is_supplementary() && !m.is_secondary() {
+                Some(m)
+            } else {
+                None
+            }
+        })
         .collect();
 
     assert_eq!(aln.len(), 1);
     aln.remove(0)
-}
-
-/// Create the necessary information for a read to be modified following realignment.
-pub fn create_alignment_payload(map: Mapping) -> Option<AlignmentPayload> {
-    if map.is_supplementary || !map.is_primary {
-        return None;
-    }
-    if map.alignment.is_none() {
-        return None;
-    }
-
-    Some(AlignmentPayload {
-        pos: map.target_start,
-        mapq: map.mapq,
-        cigarstr: map.alignment.unwrap().cigar_str.unwrap(),
-        tid: map.target_id,
-    })
-}
-
-fn parse_cigar_string(cigar_str: &str) -> CigarString {
-    let mut ops = Vec::new();
-    let mut current_num = 0;
-    for c in cigar_str.chars() {
-        match c {
-            '0'..='9' => current_num = current_num * 10 + (c as u32 - '0' as u32),
-            _ => {
-                let op = match c {
-                    'M' => Cigar::Match(current_num),
-                    'I' => Cigar::Ins(current_num),
-                    'D' => Cigar::Del(current_num),
-                    'N' => Cigar::RefSkip(current_num),
-                    'S' => Cigar::SoftClip(current_num),
-                    'H' => Cigar::HardClip(current_num),
-                    'P' => Cigar::Pad(current_num),
-                    'X' => Cigar::Diff(current_num),
-                    '=' => Cigar::Equal(current_num),
-                    _ => panic!("Invalid CIGAR operation: {}", c),
-                };
-                ops.push(op);
-                current_num = 0;
-            }
-        }
-    }
-
-    CigarString(ops)
 }
 
 pub enum AlignerReference<'a> {
@@ -137,8 +79,13 @@ impl Realigner {
             .map(|x| *x)
             .collect();
 
+        let mut header = Header::new();
+        aligner.populate_header(&mut header);
+        let headerview = HeaderView::from_header(&header);
+
         self.aligner = aligner;
         self.refname = refname;
+        self.headerview = Some(headerview);
 
         Ok(())
     }
@@ -151,65 +98,70 @@ impl Realigner {
         Ok(Self {
             aligner,
             refname: "NONE".into(),
+            headerview: None,
         })
     }
 
-    pub fn realign(&mut self, seq: &[u8], outvec: &mut Vec<Mapping>) -> Result<(), Error> {
+    pub fn realign(
+        &self,
+        rec: &Record,
+        header: &HeaderView,
+        outvec: &mut Vec<Record>,
+    ) -> Result<(), Error> {
         *outvec = self
             .aligner
-            .map(seq, true, false, None, None, Some(self.refname.as_slice()))
+            .map_to_sam(
+                rec.seq().as_bytes().as_slice(),
+                None,
+                Some(rec.qname()),
+                header,
+                None,
+                None,
+            )
             .expect("failed to realign!");
 
         Ok(())
     }
 
     pub fn realign_region_record(&mut self, records: &mut Vec<Record>) -> Result<(), Error> {
-        let mut aln: AlignmentPayload;
-        let mut maps: Vec<Mapping> = vec![];
+        let mut aln: Record;
+        let mut maps: Vec<Record> = vec![];
+        let header = self.headerview.as_ref().unwrap();
 
-        for mut rec in records.iter_mut() {
-            self.realign(rec.seq().as_bytes().as_slice(), &mut maps)?;
+        for rec in records.iter_mut() {
+            self.realign(&rec, &header, &mut maps)?;
             if maps.is_empty() {
-                // println!(
-                //     "{} {:?} {:?} {:?}",
-                //     self.aligner.has_index(),
-                //     self.aligner.mapopt,
-                //     rec,
-                //     rec.cigar()
-                // );
-
                 continue;
             }
 
             aln = filter_maps(&mut maps);
-            set_read_to_realign(&mut rec, aln);
+            *rec = aln;
         }
 
         Ok(())
     }
 
     pub fn realign_region_plp(&mut self, pileups: &mut Vec<PileupRef>) -> Result<(), Error> {
-        let mut aln: AlignmentPayload;
-        let mut maps: Vec<Mapping> = vec![];
+        let mut aln: Record;
+        let mut maps: Vec<Record> = vec![];
+        let header = self.headerview.as_ref().unwrap();
 
         for plp in pileups.iter_mut() {
-            let mut rec = &mut plp.borrow_mut().rec;
-            self.realign(rec.seq().as_bytes().as_slice(), &mut maps)?;
+            let plp = &mut plp.borrow_mut();
+            self.realign(&plp.rec, header, &mut maps)?;
             if maps.is_empty() {
-                // println!(
-                //     // anyhow::bail!(
-                //     "{} {:?} {:?} {:?}",
-                //     self.aligner.has_index(),
-                //     self.aligner.mapopt,
-                //     rec,
-                //     rec.cigar()
-                // );
 
                 continue;
             }
 
             aln = filter_maps(&mut maps);
-            set_read_to_realign(&mut rec, aln);
+            // record = aln;
+            //
+            plp.cstate.cig = aln.cigar().clone();
+            plp.cstate.bam_pos = aln.pos() as u32;
+            plp.rec = aln;
+            plp.cstate.icig = 0;
+            plp.cstate.iseq = 0;
         }
 
         Ok(())
@@ -279,7 +231,7 @@ mod tests {
 
         realigner.realign_region_record(&mut ref_records).unwrap();
 
-        println!{"{:?}", ref_records}
+        println! {"{:?}", ref_records}
         for r in &ref_records {
             assert!(!r.is_unmapped());
             println! {"{:?}, {:?}", r, r.cigar()}
@@ -299,8 +251,7 @@ mod tests {
 
         realigner.realign_region_record(&mut ref_records).unwrap();
 
-
-        println!{"{:?}", ref_records}
+        println! {"{:?}", ref_records}
         for r in &ref_records {
             println! {"{:?}, {:?}", r, r.cigar()}
             assert!(!r.is_unmapped());

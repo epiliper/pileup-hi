@@ -17,6 +17,11 @@ pub fn validate_params(p: &Params) {
         eprintln!{"You must provide a reference fasta when enabling indel realignment."};
         std::process::exit(1);
     }
+
+    if !p.plp.indel_realign && p.outp.output_realigned.is_some() {
+        eprintln!{"Indel realignment must be enabled when choosing to output realigned bam."}
+        std::process::exit(1);
+    }
 }
 
 pub fn parse_or_quit() -> Params {
@@ -86,6 +91,10 @@ pub struct PileupParams {
 
 #[derive(Parser)]
 pub struct OutputParams {
+
+    #[arg(short = 'C', long = "--output_realigned")]
+    pub output_realigned: Option<String>,
+
     // pub output_ends: bool,
     // pub reverse_del: bool,
     // pub output_qname: bool,

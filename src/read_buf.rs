@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::overlap::{MapOverlaps, OverlapMap};
 use crate::pileup::{cigar2rlen, CigarState, Pileup, PileupRef};
 use rust_htslib::bam::Record;
@@ -78,6 +77,7 @@ impl ReadBuffer {
         let backup_buf: Vec<PileupRef> = Vec::with_capacity(500);
         let max_depth = depth.cmp(&0).is_eq().then_some(usize::MAX).unwrap_or(depth);
         let len = 0;
+
         let overlap_map = match disable_overlaps {
             false => Some(HashMap::new()),
             true => None,

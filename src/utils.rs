@@ -34,6 +34,7 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
         if cs.icig >= ncig {
             // this should never happen, since we check cigars beforehand to at least end
             // at the queried coordinate, if not pass over it.
+            println!{"{cig}, {} {}", cs.icig, cs.iseq}
             return CigarAtPos::BeforePos();
         }
 

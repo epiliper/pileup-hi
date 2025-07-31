@@ -171,6 +171,10 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
     let mut base_a @ mut base_b: u8 = b'N';
     let amul @ bmul: bool;
 
+    if a.pos() > b.pos() {
+        std::mem::swap(a, b);
+    }
+
     // we assume that we encounter reads in order (e.g coord-sorted).
     assert!(a.pos() <= b.pos());
 
