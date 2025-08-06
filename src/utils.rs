@@ -1,12 +1,9 @@
-use anyhow::{Context, Error};
-use rust_htslib::bam::record::Cigar;
 use crate::pileup::CigarState;
+use anyhow::{Context, Error};
+use rust_htslib::bam::{record::Cigar, Record, ext::BamRecordExtensions};
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum CigarAtPos {
-    BeforePos(),
-    Op(Cigar),
-    BaseEmpty(),
+pub fn read_ends_before_pos(rec: &Record, pos: i64) -> bool {
+    rec.reference_end() - 1 < pos
 }
 
 pub fn has_index(bam_file: &str) -> Result<bool, Error> {
@@ -26,7 +23,7 @@ pub fn has_index(bam_file: &str) -> Result<bool, Error> {
 ///
 /// if return == [CigarAtPos(Cigar::Del(l))], then current position is [Cigar::Match] but the very next
 /// one is [Cigar::Del].
-pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
+pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> Option<Cigar> {
     let cig = &cs.cig;
     let ncig = cig.len();
     let mut op: Cigar;
@@ -34,8 +31,9 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
         if cs.icig >= ncig {
             // this should never happen, since we check cigars beforehand to at least end
             // at the queried coordinate, if not pass over it.
-            println!{"{cig}, {} {}", cs.icig, cs.iseq}
-            return CigarAtPos::BeforePos();
+            println! {"{cig}, {} {}", cs.icig, cs.iseq}
+            // return CigarAtPos::BeforePos();
+            return None;
         }
 
         op = cig[cs.icig];
@@ -56,12 +54,11 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
                     let next_op = cig[cs.icig + 1];
 
                     match next_op {
-                        Cigar::Ins(_) => return CigarAtPos::Op(next_op),
-                        Cigar::Del(_) => return CigarAtPos::Op(next_op),
+                        Cigar::Del(_) | Cigar::Ins(_) => return Some(next_op),
                         _ => (),
                     }
                 }
-                return CigarAtPos::Op(Cigar::Match(len));
+                return Some(Cigar::Match(len));
             }
 
             Cigar::Ins(len) | Cigar::SoftClip(len) => {
@@ -83,7 +80,7 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
                 cs.del = true;
                 // cs.qpos = (cs.iseq + len) as usize;
                 cs.qpos = cs.iseq as usize;
-                return CigarAtPos::Op(op);
+                return Some(op);
             }
 
             Cigar::RefSkip(len) => {
@@ -94,12 +91,12 @@ pub fn cigar_get_pos(cs: &mut CigarState, pos: u32) -> CigarAtPos {
                     continue;
                 }
 
-                return CigarAtPos::BaseEmpty();
+                // return CigarAtPos::BaseEmpty();
+                return None;
             }
             _ => (),
         }
     }
 
-    CigarAtPos::BaseEmpty()
+    None
 }
-

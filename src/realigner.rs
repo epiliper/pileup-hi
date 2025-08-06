@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use anyhow::Error;
+// use left_align_indel::left_align_indels;
 use minimap2::{Aligner, Built};
 use rust_htslib::bam::{Header, HeaderView, Record};
-use left_align_indel::left_align_indels;
 
 use crate::pileup::PileupRef;
 

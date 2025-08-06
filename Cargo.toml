@@ -18,4 +18,4 @@ overflow-checks = false
 [profile.release]
 opt-level = 3
 lto = "fat"
-codegene-units = 1
+codegen-units = 1
