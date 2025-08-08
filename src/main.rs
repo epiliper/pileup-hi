@@ -1,10 +1,10 @@
 use crate::params::parse_or_quit;
 use anyhow::Error;
 
+mod alignment;
 mod bamio;
 mod overlap;
 mod params;
-mod pileup;
 mod pileup_iterator;
 mod pileup_writer;
 mod read_buf;

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
-// use crate::pileup::Pileup;
-use crate::pileup::Pileup;
+// use crate::alignment::Pileup;
+use crate::alignment::Alignment;
 use crate::read_walker::WalkMatches;
 use anyhow::Error;
 use rust_htslib::bam::Record;
@@ -9,10 +9,10 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::slice;
 use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
-pub type OverlapMap = HashMap<u64, Rc<RefCell<Pileup>>>;
+pub type OverlapMap = HashMap<u64, Rc<RefCell<Alignment>>>;
 
 pub trait MapOverlaps {
-    fn push(&mut self, r: Rc<RefCell<Pileup>>);
+    fn push(&mut self, r: Rc<RefCell<Alignment>>);
     fn delete_hash(&mut self, r: u64);
     fn delete_read(&mut self, r: &Record);
 }
@@ -24,7 +24,7 @@ pub fn hash_qname(r: &Record) -> u64 {
 }
 
 impl MapOverlaps for OverlapMap {
-    fn push(&mut self, plp: Rc<RefCell<Pileup>>) {
+    fn push(&mut self, plp: Rc<RefCell<Alignment>>) {
         let mut r = &mut plp.borrow_mut().rec;
 
         if r.is_mate_unmapped() || !r.is_proper_pair() {

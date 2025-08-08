@@ -1,6 +1,6 @@
-use crate::pileup::CigarState;
+use crate::alignment::CigarState;
 use anyhow::{Context, Error};
-use rust_htslib::bam::{record::Cigar, Record, ext::BamRecordExtensions};
+use rust_htslib::bam::{ext::BamRecordExtensions, record::Cigar, Record};
 
 pub fn read_ends_before_pos(rec: &Record, pos: i64) -> bool {
     rec.reference_end() - 1 < pos

@@ -400,7 +400,7 @@ impl PileupIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pileup::CigarState;
+    use crate::alignment::CigarState;
     use rust_htslib::bam::{record::CigarString, Record};
 
     #[test]

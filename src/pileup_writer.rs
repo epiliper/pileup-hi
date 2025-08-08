@@ -1,4 +1,4 @@
-use crate::pileup::CigarState;
+use crate::alignment::CigarState;
 
 use anyhow::Error;
 use rust_htslib::bam::{ext::BamRecordExtensions, record::Cigar, Record};

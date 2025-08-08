@@ -5,7 +5,7 @@ use anyhow::Error;
 use minimap2::{Aligner, Built};
 use rust_htslib::bam::{Header, HeaderView, Record};
 
-use crate::pileup::PileupRef;
+use crate::alignment::AlignmentRef;
 
 pub type Remapper = Aligner<Built>;
 
@@ -142,7 +142,7 @@ impl Realigner {
         Ok(())
     }
 
-    pub fn realign_region_plp(&mut self, pileups: &mut Vec<PileupRef>) -> Result<(), Error> {
+    pub fn realign_region_plp(&mut self, pileups: &mut Vec<AlignmentRef>) -> Result<(), Error> {
         let mut aln: Record;
         let mut maps: Vec<Record> = vec![];
         let header = self.headerview.as_ref().unwrap();

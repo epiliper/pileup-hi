@@ -1,12 +1,12 @@
 use crate::overlap::{MapOverlaps, OverlapMap};
-use crate::pileup::{cigar2rlen, CigarState, Pileup, PileupRef};
+use crate::alignment::{cigar2rlen, CigarState, Alignment, AlignmentRef};
 use rust_htslib::bam::Record;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 pub struct ReadBuffer {
-    pub rbuf: Vec<PileupRef>,
+    pub rbuf: Vec<AlignmentRef>,
     pub len: i64,
-    pub backup_buf: Vec<PileupRef>,
+    pub backup_buf: Vec<AlignmentRef>,
     pub overlap_map: Option<OverlapMap>,
     pub depth: usize,
     pub max_depth: usize,
@@ -55,7 +55,7 @@ impl ReadBuffer {
             del: false,
         };
 
-        let plp = Pileup {
+        let plp = Alignment {
             rec: r.clone(),
             cstate,
         };
@@ -73,8 +73,8 @@ impl ReadBuffer {
     }
 
     pub fn new(depth: usize, disable_overlaps: bool) -> Self {
-        let rbuf: Vec<PileupRef> = Vec::with_capacity(500);
-        let backup_buf: Vec<PileupRef> = Vec::with_capacity(500);
+        let rbuf: Vec<AlignmentRef> = Vec::with_capacity(500);
+        let backup_buf: Vec<AlignmentRef> = Vec::with_capacity(500);
         let max_depth = depth.cmp(&0).is_eq().then_some(usize::MAX).unwrap_or(depth);
         let len = 0;
 
