@@ -55,7 +55,8 @@ impl BamReader {
         match has_index(&params.input)? {
             true => {
                 // println! {"Found index for {}.", &params.input}
-                let inner = IndexedReader::new(&params.input, params.threads)?;
+                let mut inner = IndexedReader::new(&params.input, params.threads)?;
+                inner.fetch("*")?;
                 let header = inner.header().clone();
                 let max_tid = header.target_count() as i32;
                 let cur_ref = "UNINIT".to_string();
@@ -100,11 +101,14 @@ impl BamReader {
         let mut max_read_len: usize = 0;
 
         let mut reads_to_sample = READ_LENGTH_SAMPLE_SIZE;
+
         while reads_to_sample >= 0 {
             if let Some(r) = temp_reader.read_no_alloc(&mut alloc) {
                 r?;
                 max_read_len = std::cmp::max(max_read_len, alloc.seq_len());
                 reads_to_sample -= 1;
+            } else {
+                break;
             }
         }
 
@@ -116,7 +120,7 @@ impl BamReader {
         }
 
         assert!(max_read_len > 0);
-        return Ok(max_read_len);
+        Ok(max_read_len)
     }
 }
 

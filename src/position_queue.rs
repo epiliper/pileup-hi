@@ -1,5 +1,5 @@
 use anyhow::{Context, Error};
-use rust_htslib::bam::HeaderView;
+use rust_htslib::bam::{HeaderView, Read, Reader};
 
 /// A raw pileup region not yet validated to actually exist in a BAM header.
 pub struct RawPileupRegion {
@@ -40,6 +40,11 @@ impl Iterator for GenomeIntervalIterator<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let ret: Option<Self::Item>;
+
+        if self.chunk_size > self.interval.end - self.interval.start + 1 {
+            self.cur_end = self.interval.end + 1;
+            return Some(self.interval.clone());
+        }
 
         // start and end of next chunk is still within original interval
         if self.cur_end < self.interval.end {
@@ -201,5 +206,11 @@ impl PositionQueue {
         }
 
         Ok(Self { queue })
+    }
+
+    pub fn new_from_bam(path: &str) -> Result<Self, Error> {
+        let reader = Reader::from_path(path)?;
+        let header = reader.header();
+        Self::new(header)
     }
 }

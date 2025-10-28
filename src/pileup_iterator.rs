@@ -1,13 +1,14 @@
 use crate::alignment::CigarState;
 use crate::bamio::{BamReader, BamWriter};
 use crate::params::Params;
-use crate::pileup_writer::PileupString;
+use crate::pileup_writer::{PileupString, PileupWriter};
 use crate::position_queue::PositionQueue;
 use crate::read_buf;
 use crate::read_filter::ReadFilter;
 use crate::realigner::{AlignerReference, Realigner};
 use crate::refseq::RefSeq;
 use crate::utils::{cigar_get_pos, read_ends_before_pos};
+use crossbeam::channel::Sender;
 
 use anyhow::{Context, Error};
 use rust_htslib::bam::record::Cigar;
@@ -114,16 +115,16 @@ impl PileupPosition {
 /// Maintains a buffer of pileups, iterator state (current reference and position), and
 /// auxiliary structs needed for variant detection and output.
 pub struct PileupIterator {
-    tid: i32,
-    pos: i64,
+    pub tid: i32,
+    pub pos: i64,
     next_pos: i64,
-    max_pos: i64,
+    pub max_pos: i64,
     store: PileupPosition,
     tid_count: i32,
     rbuf: read_buf::ReadBuffer,
     realigner: Option<Realigner>,
     show_all: bool,
-    pileup_writer: PileupString,
+    pileup_writer: PileupWriter,
     pub reader: BamReader,
     refseq: RefCell<RefSeq>,
     read_filter: ReadFilter,
@@ -139,11 +140,10 @@ pub enum IterResult {
 }
 
 impl PileupIterator {
-    pub fn new(params: &Params) -> Result<Self, Error> {
+    pub fn new(params: &Params, out_handle: Option<Sender<PileupString>>) -> Result<Self, Error> {
         let tid = params.inp.tid.unwrap_or(UNINIT_TID);
         let pos @ next_pos @ max_pos = params.inp.pos.unwrap_or(UNINIT_POS);
         let reader = BamReader::new(&params.inp)?;
-        let pileup_writer = PileupString::new();
 
         let (store, realigner) = match params.plp.indel_realign {
             true => (PileupPosition::new(true), Some(Realigner::build_empty()?)),
@@ -153,6 +153,12 @@ impl PileupIterator {
         let read_discard = match &params.outp.output_realigned {
             Some(output) => RefCell::new(BamWriter::new_from_template(&reader.header, output)?),
             None => RefCell::new(BamWriter::void(&reader.header)?),
+        };
+
+        let pileup_writer = if let Some(output_handle) = out_handle {
+            PileupWriter::new_multi(output_handle)
+        } else {
+            PileupWriter::new_inplace()
         };
 
         let rbuf = read_buf::ReadBuffer::new(params.inp.depth, params.plp.disable_overlaps);
@@ -290,61 +296,7 @@ impl PileupIterator {
                     _ => panic!("Invalid pileup type found!"),
                 };
 
-                self.pileup_writer.intake(p);
-                // match allele {
-                //     Cigar::Match(_) => {
-                //         self.pileup_writer.write_match(
-                //             &r.rec,
-                //             r.cstate.qpos as u32,
-                //             self.pos,
-                //             self.store.ref_base,
-                //         )?;
-
-                //         (self.store.register)(&mut self.store, qual, readbase);
-                //     }
-
-                //     Cigar::Ins(_) => {
-                //         self.pileup_writer.write_match(
-                //             &r.rec,
-                //             r.cstate.qpos as u32,
-                //             self.pos,
-                //             self.store.ref_base,
-                //         )?;
-
-                //         self.pileup_writer.write_insertion(
-                //             &r.cstate,
-                //             &r.rec,
-                //             r.cstate.qpos as u32,
-                //         )?;
-
-                //         self.store.nins += 1;
-                //     }
-
-                //     Cigar::Del(l) => {
-                //         if !r.cstate.del {
-                //             self.pileup_writer.write_match(
-                //                 &r.rec,
-                //                 r.cstate.qpos as u32,
-                //                 self.pos,
-                //                 self.store.ref_base,
-                //             )?;
-
-                //             let del_seq = refseq.get_interval(
-                //                 self.pos as u64 + 1,
-                //                 (self.pos + (l as i64)) as u64,
-                //             )?;
-
-                //             self.pileup_writer
-                //                 .write_deletion_start(&r.rec, del_seq, l as i64)?
-                //         } else {
-                //             self.pileup_writer.write_deletion(qual);
-                //         }
-
-                //         self.store.ndel += 1;
-                // }
-
-                // _ => panic!("Invalid pileup type found!"),
-                // }
+                self.pileup_writer.intake(p)?;
             }
 
             drop(r);
@@ -362,7 +314,7 @@ impl PileupIterator {
                 depth,
             );
 
-            self.pileup_writer.write_pileup_str()?;
+            self.pileup_writer.write()?;
             generated = true;
         }
 
@@ -416,6 +368,7 @@ impl PileupIterator {
     }
 
     pub fn next(&mut self) -> Result<IterResult, Error> {
+        // println! {"SELF POS: {}", self.pos};
         while self.pos < self.next_pos {
             self.set_pileup()?;
             self.pos += 1;
@@ -437,6 +390,10 @@ impl PileupIterator {
                 panic!();
             }
 
+            if r.pos() > self.max_pos {
+                break;
+            }
+
             let ret = self.rbuf.attempt_push(r, self.pos, self.tid);
 
             match ret {
@@ -445,7 +402,9 @@ impl PileupIterator {
 
                 // if we hit depth limit, we exhaust all reads at this position to avoid dealing
                 // with them at self.pos + 1.
-                read_buf::BufPushResult::MaxDepthMet => continue,
+                read_buf::BufPushResult::MaxDepthMet | read_buf::BufPushResult::BeforeWindow => {
+                    continue
+                }
                 read_buf::BufPushResult::Pushed => self.next_pos = r.pos(),
             }
 

@@ -1,5 +1,6 @@
 use crate::{
     alignment::CigarState,
+    output::OrderedPileupOutput,
     pileup_iterator::{PileupBaseCall, PileupPayload},
 };
 use crossbeam::channel::Sender;
@@ -42,11 +43,30 @@ pub fn get_base_to_ref(cur_base: u8, ref_base: u8, is_reverse: bool) -> Result<u
     Ok(get_base(cur_base, is_reverse))
 }
 
+pub type PileupStringOutput<T: OrderedPileupOutput> = Sender<T>;
+
 pub struct PileupWriter {
     inner: PileupStringType,
 }
 
 impl PileupWriter {
+    pub fn new_inplace() -> Self {
+        Self {
+            inner: PileupStringType::InPlace(PileupStringInPlace {
+                plp_string: PileupString::new(),
+            }),
+        }
+    }
+
+    pub fn new_multi(s: Sender<PileupString>) -> Self {
+        Self {
+            inner: PileupStringType::MultiThreaded(PileupStringMultiThread {
+                plp_string: PileupString::new(),
+                out: s,
+            }),
+        }
+    }
+
     pub fn intake(&mut self, p: PileupPayload) -> Result<(), Error> {
         match &mut self.inner {
             PileupStringType::InPlace(ref mut s) => s.plp_string.intake(p),
@@ -58,7 +78,10 @@ impl PileupWriter {
         match &mut self.inner {
             PileupStringType::InPlace(ref mut s) => s.plp_string.write_pileup_str(),
             PileupStringType::MultiThreaded(ref mut s) => {
-                s.out.send(s.plp_string.clone()).map_err(Error::msg)
+                s.out.send(s.plp_string.clone()).map_err(Error::msg)?;
+                s.plp_string.qual_buf.clear();
+                s.plp_string.seq_buf.clear();
+                Ok(())
             }
         }
     }
@@ -250,5 +273,19 @@ impl PileupString {
         self.ref_base = ref_base;
         self.ref_name = ref_name;
         self.depth = depth;
+    }
+}
+
+impl OrderedPileupOutput for PileupString {
+    fn tid(&self) -> i32 {
+        self.tid
+    }
+
+    fn pos(&self) -> i64 {
+        self.ref_pos
+    }
+
+    fn write(&mut self) -> Result<(), Error> {
+        self.write_pileup_str()
     }
 }

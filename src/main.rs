@@ -1,10 +1,12 @@
 use crate::params::parse_or_quit;
 use crate::position_queue::{create_region_queue, PositionQueue};
+use crate::threading::PileupMultiThreader;
 use anyhow::Error;
+use pileup_iterator::PileupIterator;
 
 mod alignment;
 mod bamio;
-// mod output;
+mod output;
 mod overlap;
 mod params;
 mod pileup_iterator;
@@ -15,20 +17,23 @@ mod read_filter;
 mod read_walker;
 mod realigner;
 mod refseq;
-// mod threading;
+mod threading;
 mod utils;
 
 fn _main() -> Result<(), Error> {
     let params = parse_or_quit();
-    let mut pileup = pileup_iterator::PileupIterator::new(&params)?;
 
-    if let Some(regstr) = params.inp.region {
-        let reg_iter = create_region_queue(&regstr, &pileup.reader.header)?;
-        pileup._auto_loop(&reg_iter)
+    let queue = PositionQueue::new_from_bam(&params.inp.input)?;
+
+    if params.inp.threads > 1 {
+        let mut driver = PileupMultiThreader::new(queue, params)?;
+        driver.run()?;
     } else {
-        let queue = PositionQueue::new(&pileup.reader.header)?;
-        pileup._auto_loop(&queue)
+        let mut iterator = PileupIterator::new(&params, None)?;
+        iterator._auto_loop(&queue)?;
     }
+
+    Ok(())
 }
 
 fn main() {
