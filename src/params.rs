@@ -12,12 +12,10 @@ pub struct Params {
     pub outp: OutputParams,
 }
 
-pub fn validate_params(p: &Params) {}
-
 pub fn parse_or_quit() -> Params {
     match Params::try_parse() {
         Ok(p) => {
-            validate_params(&p);
+            // no argument checking at the moment, leaving here for the future.
             p
         }
         Err(e) => {

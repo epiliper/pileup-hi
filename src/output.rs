@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::threading::PileupWorkerState;
 use anyhow::Error;
 use crossbeam::channel::{unbounded, Receiver, Sender};

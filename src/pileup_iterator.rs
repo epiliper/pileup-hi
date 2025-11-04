@@ -90,16 +90,6 @@ impl PileupPosition {
         }
     }
 
-    /// Is a current pileup position in need of reassembly, i.e. is there a significant amount of
-    /// differences (indels, substitutions) relative to reference?
-    pub fn is_active(&mut self, floor: f32, ceil: f32, denom: f32) -> Option<f32> {
-        let ratio = (self.nalt + self.ndel + self.nins) as f32 / denom;
-        match (ratio >= floor && ratio <= ceil) && (self.nins + self.ndel) as f32 / denom > 0.1 {
-            true => Some(ratio),
-            false => None,
-        }
-    }
-
     pub fn depth(&mut self) -> u32 {
         self.ndel + self.nins + self.nmatch + self.nalt
     }
@@ -398,11 +388,6 @@ impl PileupIterator {
         }
 
         Ok(IterResult::NoData)
-
-        // match self.tid + 1 == self.tid_count {
-        //     true => Ok(IterResult::NoData),
-        //     false => Ok(IterResult::ReferenceEnd),
-        // }
     }
 }
 

@@ -15,13 +15,11 @@ pub enum BamDataSource {
 impl BamDataSource {
     pub fn from_string(s: &str) -> Result<Self, Error> {
         if s == "-" {
-            return Ok(Self::Stdin);
+            Ok(Self::Stdin)
+        } else if path::Path::exists(path::Path::new(s)) {
+            Ok(Self::File(path::PathBuf::from(s)))
         } else {
-            if path::Path::exists(path::Path::new(s)) {
-                return Ok(Self::File(path::PathBuf::from(s)));
-            } else {
-                anyhow::bail!("Input path {} not found!", s)
-            }
+            anyhow::bail!("Input path {} not found!", s)
         }
     }
 }
@@ -38,7 +36,6 @@ impl std::fmt::Display for BamDataSource {
 pub struct BamReader {
     inner: Box<dyn BamRead>,
     pub header: HeaderView,
-    pub max_tid: i32,
     pub cur_ref: String,
 }
 
@@ -59,13 +56,11 @@ impl BamReader {
         };
 
         let header = inner.get_header().clone();
-        let max_tid = (header.target_count() - 1) as i32;
         let cur_ref = "UNINIT".to_string();
 
         Ok(Self {
             inner,
             header,
-            max_tid,
             cur_ref,
         })
     }

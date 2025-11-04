@@ -53,10 +53,6 @@ impl RefSeq {
         }
     }
 
-    pub fn yield_seq_slice(&self) -> &[u8] {
-        self.seq.as_slice()
-    }
-
     pub fn load_seq(&mut self, t_name: &str, start: u64, stop: u64) -> Result<(), Error> {
         if let Some(reader) = &mut self.reader {
             reader.fetch(t_name, start, stop).with_context(|| {

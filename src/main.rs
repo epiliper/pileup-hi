@@ -16,7 +16,6 @@ mod position_queue;
 mod read_buf;
 mod read_filter;
 mod read_walker;
-mod record;
 mod refseq;
 mod threading;
 mod utils;
