@@ -112,5 +112,8 @@ impl ReadBuffer {
     pub fn reset(&mut self) {
         assert!(self.rbuf.is_empty());
         std::mem::swap(&mut self.rbuf, &mut self.backup_buf);
+        if let Some(ov) = &mut self.overlap_map {
+            ov.shrink_to_fit();
+        }
     }
 }
