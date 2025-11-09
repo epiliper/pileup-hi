@@ -7,11 +7,12 @@ use anyhow::Error;
 
 mod alignment;
 mod bamio;
+mod cigar_resolve;
 mod output;
 mod overlap;
 mod params;
 mod pileup_iterator;
-mod pileup_writer;
+mod pileup_string;
 mod position_queue;
 mod read_buf;
 mod read_filter;

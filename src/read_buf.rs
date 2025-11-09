@@ -1,12 +1,12 @@
-use crate::alignment::{cigar2rlen, Alignment, AlignmentRef, CigarState};
+use crate::alignment::{cigar2rlen, CigarState, PileupAlignment, PileupAlignmentRef, CIGAR_STATE_UNINIT};
 use crate::overlap::{MapOverlaps, OverlapMap};
 use rust_htslib::bam::Record;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 pub struct ReadBuffer {
-    pub rbuf: Vec<AlignmentRef>,
+    pub rbuf: Vec<PileupAlignmentRef>,
     pub len: i64,
-    pub backup_buf: Vec<AlignmentRef>,
+    pub backup_buf: Vec<PileupAlignmentRef>,
     pub overlap_map: Option<OverlapMap>,
     pub depth: usize,
     pub max_depth: usize,
@@ -15,7 +15,6 @@ pub struct ReadBuffer {
 #[derive(Debug, Eq, PartialEq)]
 pub enum BufPushResult {
     Pushed,
-    BeforeWindow,
     DifferentReference,
     Unmapped,
     MaxDepthMet,
@@ -46,18 +45,13 @@ impl ReadBuffer {
 
         let cstate = CigarState {
             cig: r.cigar(),
-            icig: 0,
+            icig: CIGAR_STATE_UNINIT,
             iseq: 0,
-            bam_pos: r.pos() as u32,
-            qpos: 0,
-            del: false,
+            bam_pos: r.pos(),
             read_len_from_cigar,
         };
 
-        let plp = Alignment {
-            rec: r.clone(),
-            cstate,
-        };
+        let plp = PileupAlignment::new(r.clone(), cstate);
 
         let plp_ref = Rc::new(RefCell::new(plp));
 
@@ -72,14 +66,10 @@ impl ReadBuffer {
     }
 
     pub fn new(depth: usize, disable_overlaps: bool) -> Self {
-        let rbuf: Vec<AlignmentRef> = Vec::with_capacity(500);
-        let backup_buf: Vec<AlignmentRef> = Vec::with_capacity(500);
+        let rbuf: Vec<PileupAlignmentRef> = Vec::with_capacity(500);
+        let backup_buf: Vec<PileupAlignmentRef> = Vec::with_capacity(500);
 
-        let max_depth = if depth.cmp(&0).is_eq() {
-            usize::MAX
-        } else {
-            depth
-        };
+        let max_depth = if depth.cmp(&0).is_eq() { usize::MAX } else { depth };
         let len = 0;
 
         let overlap_map = match disable_overlaps {

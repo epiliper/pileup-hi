@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::alignment::Alignment;
+use crate::alignment::PileupAlignment;
 use crate::read_walker::WalkMatches;
 use anyhow::Error;
 use rust_htslib::bam::Record;
@@ -8,10 +8,10 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::slice;
 use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
-pub type OverlapMap = HashMap<u64, Rc<RefCell<Alignment>>>;
+pub type OverlapMap = HashMap<u64, Rc<RefCell<PileupAlignment>>>;
 
 pub trait MapOverlaps {
-    fn push(&mut self, r: Rc<RefCell<Alignment>>);
+    fn push(&mut self, r: Rc<RefCell<PileupAlignment>>);
     fn delete_hash(&mut self, r: u64);
     fn delete_read(&mut self, r: &Record);
 }
@@ -23,7 +23,7 @@ pub fn hash_qname(r: &Record) -> u64 {
 }
 
 impl MapOverlaps for OverlapMap {
-    fn push(&mut self, plp: Rc<RefCell<Alignment>>) {
+    fn push(&mut self, plp: Rc<RefCell<PileupAlignment>>) {
         let r = &mut plp.borrow_mut().rec;
 
         if r.is_mate_unmapped() || !r.is_proper_pair() {
@@ -192,8 +192,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
     }
 
     let mut iref = b.pos();
-    let (mut apos, mut a_iref, mut bpos, mut b_iref) =
-        (ap.read_pos, ap.genome_pos, bp.read_pos, bp.genome_pos);
+    let (mut apos, mut a_iref, mut bpos, mut b_iref) = (ap.read_pos, ap.genome_pos, bp.read_pos, bp.genome_pos);
 
     loop {
         while ap.genome_pos < iref {
@@ -220,11 +219,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
         // println! {"APOS: {apos} BPOS: {bpos} {} {} {} {}", ap.after_del(), bp.after_del(), ap.genome_pos, bp.genome_pos} // if a_iref > b_iref && ap.passed_deletion() {
         if a_iref > b_iref && ap.after_del() {
             while b_iref < a_iref {
-                new_qual = if bmul {
-                    (b.qual()[bpos] as f32 * 0.8) as u8
-                } else {
-                    0
-                };
+                new_qual = if bmul { (b.qual()[bpos] as f32 * 0.8) as u8 } else { 0 };
 
                 set_qual(b, bpos, new_qual)?;
                 // println! {"Adjusting to deletion in read A: POS: {bpos} QUAL: {new_qual} {}", std::str::from_utf8(a.qname())?}
@@ -240,11 +235,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
         // if b_iref > a_iref && bp.passed_deletion() {
         else if b_iref > a_iref && bp.after_del() {
             while a_iref < b_iref {
-                new_qual = if amul {
-                    (a.qual()[apos] as f32 * 0.8) as u8
-                } else {
-                    0
-                };
+                new_qual = if amul { (a.qual()[apos] as f32 * 0.8) as u8 } else { 0 };
 
                 set_qual(a, apos, new_qual)?;
                 // println! {"Adjusting to deletion in read B: POS: {apos} QUAL: {new_qual} {}", std::str::from_utf8(a.qname())?}
@@ -257,16 +248,7 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
             }
         };
 
-        null_ref_bases(
-            a,
-            apos,
-            b,
-            bpos,
-            amul,
-            &mut base_a,
-            &mut base_b,
-            &mut new_qual,
-        )?;
+        null_ref_bases(a, apos, b, bpos, amul, &mut base_a, &mut base_b, &mut new_qual)?;
     }
 
     // Ok(())
@@ -280,12 +262,7 @@ mod tests {
     #[test]
     pub fn qual_set_test1() {
         let mut record = Record::new();
-        record.set(
-            b"read1",
-            Some(&CigarString(vec![Cigar::Match(4)])),
-            b"AAAA",
-            b"####",
-        );
+        record.set(b"read1", Some(&CigarString(vec![Cigar::Match(4)])), b"AAAA", b"####");
 
         set_qual(&mut record, 0, 0).unwrap();
         assert_eq!(record.qual()[0], 0);
@@ -296,11 +273,7 @@ mod tests {
         let mut record = Record::new();
         record.set(
             b"read2",
-            Some(&CigarString(vec![
-                Cigar::Match(4),
-                Cigar::Ins(5),
-                Cigar::Match(3),
-            ])),
+            Some(&CigarString(vec![Cigar::Match(4), Cigar::Ins(5), Cigar::Match(3)])),
             b"AAAAGAAAAAAA",
             b"############",
         );
@@ -320,11 +293,7 @@ mod tests {
         let mut record = Record::new();
         record.set(
             b"read2",
-            Some(&CigarString(vec![
-                Cigar::Match(4),
-                Cigar::Ins(5),
-                Cigar::Match(3),
-            ])),
+            Some(&CigarString(vec![Cigar::Match(4), Cigar::Ins(5), Cigar::Match(3)])),
             b"AAAAGAAAAAAA",
             b"############",
         );
@@ -337,11 +306,7 @@ mod tests {
         let mut a = Record::new();
         a.set(
             b"read1",
-            Some(&CigarString(vec![
-                Cigar::Match(4),
-                Cigar::Del(1),
-                Cigar::Match(5),
-            ])),
+            Some(&CigarString(vec![Cigar::Match(4), Cigar::Del(1), Cigar::Match(5)])),
             b"AAAAGTACA",
             b"#########",
         );

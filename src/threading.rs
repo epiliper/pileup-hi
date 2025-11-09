@@ -4,7 +4,7 @@ use crate::{
     output::PileupOutputAggregator,
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
-    pileup_writer::PileupString,
+    pileup_string::PileupString,
     position_queue::{create_region_queue, GenomeInterval, PositionQueue},
 };
 
@@ -55,9 +55,7 @@ impl PileupWorker {
         let j = std::thread::spawn(move || {
             let mut iterator = PileupIterator::new(&s, &p, Some(o)).unwrap();
 
-            iterator
-                ._auto_loop(&PositionQueue { queue: vec![i] })
-                .unwrap();
+            iterator._auto_loop(&PositionQueue { queue: vec![i] }).unwrap();
         });
 
         self.state = PileupWorkerState::Running(j);

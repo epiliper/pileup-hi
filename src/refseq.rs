@@ -1,120 +1,105 @@
 use anyhow::{Context, Error};
-use bio::io::fasta;
+use bio::io::{
+    fasta,
+    fasta::{FastaRead, Record},
+};
 use std::fs::File;
+use std::io::BufReader;
 use std::path::Path;
 
+// This is necessary because rust-bio's fasta reader reads to different types depending on whether
+// the fasta is indexed. I need to change this in the future.
+pub enum RefSeqStore {
+    Record(Record),
+    Seq(Vec<u8>),
+}
+pub trait FastaReader {
+    fn read_to_bytes(&mut self, refname: &str, seqbuf: &mut RefSeqStore) -> Result<i64, Error>;
+}
+
+impl FastaReader for fasta::Reader<BufReader<File>> {
+    fn read_to_bytes(&mut self, refname: &str, seqbuf: &mut RefSeqStore) -> Result<i64, Error> {
+        match seqbuf {
+            RefSeqStore::Record(r) => {
+                while let Ok(()) = self.read(r) {
+                    if r.id() == refname {
+                        return Ok(r.seq().len() as i64);
+                    }
+
+                    if r.seq().is_empty() {
+                        anyhow::bail!("Unable to find sequence {} in file", refname);
+                    }
+                }
+
+                anyhow::bail!("Unable to find sequence {} in file", refname);
+            }
+
+            RefSeqStore::Seq(_) => anyhow::bail!("Cannot read from non-indexed reader into plain byte slice!"),
+        }
+    }
+}
+
+impl FastaReader for fasta::IndexedReader<File> {
+    fn read_to_bytes(&mut self, refname: &str, seqbuf: &mut RefSeqStore) -> Result<i64, Error> {
+        match seqbuf {
+            RefSeqStore::Record(_) => anyhow::bail!("Cannot read from indexed reader into Record struct"),
+            RefSeqStore::Seq(seq) => {
+                self.fetch_all(refname)?;
+                self.read(seq)
+                    .with_context(|| format!("Fail to read reference {}", refname))?;
+                Ok(seq.len() as i64)
+            }
+        }
+    }
+}
+
 pub struct RefSeq {
-    wstart: u64,
-    wend: u64,
-    seq: Vec<u8>,
-    reader: Option<fasta::IndexedReader<File>>,
-    empty: bool,
+    wend: i64,
+    store: RefSeqStore,
+    reader: Box<dyn FastaReader>,
 }
 
 impl RefSeq {
-    pub fn is_empty(&self) -> bool {
-        self.empty
-    }
-
     // TODO: use regular fasta reader to avoid using rust_bio
-    pub fn from_file(file: String) -> Result<Self, Error> {
+    pub fn from_file(file: &str) -> Result<Self, Error> {
         // check if idx exists
         let idx_name = format! {"{file}.fai"};
         let faidx = Path::new(&idx_name);
 
         if !faidx.exists() {
-            anyhow::bail!(
-                "Unable to find index file {:?} for ref file {file}",
-                idx_name
-            )
-        }
-
-        let reader = Some(fasta::IndexedReader::from_file(&Path::new(&file))?);
-        let wstart = 0;
-        let wend = 0;
-        let seq = Vec::new();
-
-        Ok(Self {
-            wstart,
-            wend,
-            seq,
-            reader,
-            empty: false,
-        })
-    }
-
-    pub fn new_empty() -> Self {
-        Self {
-            wstart: 0,
-            wend: 0,
-            seq: vec![],
-            reader: None,
-            empty: true,
-        }
-    }
-
-    pub fn load_seq(&mut self, t_name: &str, start: u64, stop: u64) -> Result<(), Error> {
-        if let Some(reader) = &mut self.reader {
-            reader.fetch(t_name, start, stop).with_context(|| {
-                format!(
-                    "Internal error: unable to fetch interval {} - {} for ref {}",
-                    start, stop, t_name,
-                )
-            })?;
-
-            self.seq = Vec::with_capacity(usize::try_from(stop - start + 10)?);
-            self.wstart = start;
-            self.wend = stop;
-
-            reader.read(&mut self.seq).with_context(|| {
-                format!(
-                    "ref fasta corruption at interval {} - {} for ref {}",
-                    start, stop, t_name
-                )
-            })?;
-
-            Ok(())
+            let reader = Box::new(fasta::Reader::from_file(Path::new(&file))?);
+            let store = RefSeqStore::Record(Record::new());
+            Ok(Self { wend: 0, store, reader })
         } else {
-            anyhow::bail!("Attempted to fetch sequence with no reader loaded")
+            let reader = Box::new(fasta::IndexedReader::from_file(&Path::new(&file))?);
+            let store = RefSeqStore::Seq(Vec::new());
+            Ok(Self { wend: 0, store, reader })
         }
     }
 
-    pub fn get_base(&self, pos: u64) -> Result<u8, Error> {
-        if self.empty {
-            return Ok(b'N');
-        }
+    pub fn load_seq(&mut self, t_name: &str) -> Result<(), Error> {
+        let reflen = self.reader.read_to_bytes(t_name, &mut self.store)?;
+        self.wend = reflen;
+        Ok(())
+    }
 
+    #[allow(dead_code)]
+    pub fn get_base(&self, pos: i64) -> Result<u8, Error> {
         if pos > self.wend {
-            anyhow::bail!(
-                "Position {pos} exceeds current loaded window up to {}",
-                self.wend
-            )
+            anyhow::bail!("Position {pos} exceeds current loaded window up to {}", self.wend)
         } else {
-            let offset = pos - self.wstart;
-            let r = self
-                .seq
-                .get(offset as usize)
-                .context("Unable to get ref base")?;
-            Ok(*r)
+            match &self.store {
+                RefSeqStore::Record(r) => Ok(r.seq()[pos as usize]),
+
+                RefSeqStore::Seq(seq) => Ok(seq[pos as usize]),
+            }
         }
     }
 
-    pub fn get_interval(&mut self, start: u64, end: u64) -> Result<&[u8], Error> {
-        if self.empty {
-            self.seq = std::iter::repeat_n(b'N', (end - start + 1) as usize).collect();
-            return Ok(self.seq.as_slice());
-        }
-
-        if start < self.wstart || end > self.wend {
-            anyhow::bail!(
-                "Invalid query window for loaded ref seq window {}-{}: {}-{}",
-                self.wstart,
-                self.wend,
-                start,
-                end
-            )
-        } else {
-            Ok(&self.seq[start as usize..=end as usize])
+    pub fn yield_seq(&self) -> &[u8] {
+        match &self.store {
+            RefSeqStore::Record(r) => r.seq(),
+            RefSeqStore::Seq(seq) => seq,
         }
     }
 }

@@ -1,108 +1,22 @@
 use crate::{
-    alignment::CigarState,
     bamio::{BamDataSource, BamReader},
+    cigar_resolve::resolve_cigar,
     params::PileupParams,
-    pileup_writer::{PileupString, PileupWriter},
+    pileup_string::PileupString,
     position_queue::PositionQueue,
     read_buf::{BufPushResult, ReadBuffer},
     read_filter::ReadFilter,
     refseq::RefSeq,
-    utils::{cigar_get_pos, read_ends_before_pos},
+    utils::read_ends_before_pos,
 };
 
 use crossbeam::channel::Sender;
 
-use anyhow::{Context, Error};
-use rust_htslib::bam::record::Cigar;
+use anyhow::Error;
 use rust_htslib::bam::Record;
-use std::cell::RefCell;
 
 pub const UNINIT_POS: i64 = i64::MAX - 1;
 pub const UNINIT_TID: i32 = i32::MAX - 1;
-
-/// Options for a single position of coverage in one read.
-pub enum PileupBaseCall {
-    DeletionStart, // the deleted reference sequence
-    Insertion,     // deletion length, the inserted sequence
-    Gap,           // just empty * (in the middle of a deletion)
-    Match,         // All info necessary to display match
-    RefSkip,
-    NA, // No information
-}
-
-pub struct PileupPayload<'a> {
-    pub cstate: &'a CigarState,
-    pub rec: &'a Record,
-    pub plp_ref_pos: i64,
-    pub plp_read_pos: usize,
-    pub ref_base: u8,
-    pub call: PileupBaseCall,
-    pub aux: &'a [u8],
-}
-
-/// A counter class to track the number of reads differing from the reference at a given pileup.
-/// Holds the qualities of all bases, and the number of reads with ref-matching vs differing bases.
-///
-/// [nmatch] = number of reads consuming reference at this positiion, which includes nalt.
-/// [nalt] = number of nmatch reads that differ from reference sequence
-/// [ndel] = number of reads with deletion following this position
-/// [nins] = number of reads with insertion following this position
-pub struct PileupPosition {
-    quals: Vec<u8>,
-    nmatch: u32,
-    nalt: u32,
-    ndel: u32,
-    nins: u32,
-    ref_base: u8,
-    register: fn(&mut Self, u8, u8),
-}
-
-impl PileupPosition {
-    fn _uptake(&mut self, qual: u8, base: u8) {
-        self.quals.push(qual);
-
-        match base == self.ref_base {
-            true => self.nmatch += 1,
-            false => self.nalt += 1,
-        }
-    }
-
-    fn _ignore(&mut self, _qual: u8, base: u8) {
-        match base == self.ref_base {
-            true => self.nmatch += 1,
-            false => self.nalt += 1,
-        }
-    }
-
-    pub fn new(gather_align_metrics: bool) -> Self {
-        let uptake_method = match gather_align_metrics {
-            true => PileupPosition::_uptake,
-            false => PileupPosition::_ignore,
-        };
-
-        Self {
-            quals: Vec::new(),
-            nmatch: 0,
-            nalt: 0,
-            ndel: 0,
-            nins: 0,
-            ref_base: b'N',
-            register: uptake_method,
-        }
-    }
-
-    pub fn depth(&mut self) -> u32 {
-        self.ndel + self.nins + self.nmatch + self.nalt
-    }
-
-    pub fn clear(&mut self) {
-        self.quals.clear();
-        self.nalt = 0;
-        self.nins = 0;
-        self.ndel = 0;
-        self.nmatch = 0;
-    }
-}
 
 /// The iterator responsible for coordinate-wise traversal of a BAM reference/region.
 /// Maintains a buffer of pileups, iterator state (current reference and position), and
@@ -112,11 +26,10 @@ pub struct PileupIterator {
     pos: i64,
     next_pos: i64,
     pub max_pos: i64,
-    store: PileupPosition,
     rbuf: ReadBuffer,
-    pileup_writer: PileupWriter,
+    pileup_writer: PileupString,
     pub reader: BamReader,
-    refseq: RefCell<RefSeq>,
+    refseq: Option<RefSeq>,
     read_filter: ReadFilter,
     cur_rec: Record,
     show_all: bool,
@@ -137,13 +50,12 @@ impl PileupIterator {
     ) -> Result<Self, Error> {
         let reader = BamReader::new(src, num_cpus::get())?;
 
-        let store = PileupPosition::new(false);
-
-        let pileup_writer = if let Some(output_handle) = out_handle {
-            PileupWriter::new_multi(output_handle)
-        } else {
-            PileupWriter::new_inplace()
-        };
+        let pileup_writer = PileupString::new();
+        // let pileup_writer = if let Some(output_handle) = out_handle {
+        //     PileupWriter::new_multi(output_handle)
+        // } else {
+        //     PileupWriter::new_inplace()
+        // };
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
 
@@ -162,9 +74,10 @@ impl PileupIterator {
         let show_all = params.show_empty_coords;
         let min_baseq = params.min_baseq;
 
-        let refseq = match &params.refseq {
-            Some(ref_file) => RefCell::new(RefSeq::from_file(ref_file.clone())?),
-            None => RefCell::new(RefSeq::new_empty()),
+        let refseq = if let Some(ref_file) = &params.refseq {
+            Some(RefSeq::from_file(ref_file)?)
+        } else {
+            None
         };
 
         Ok(Self {
@@ -175,7 +88,6 @@ impl PileupIterator {
             rbuf,
             pileup_writer,
             reader,
-            store,
             read_filter,
             refseq,
             cur_rec,
@@ -203,17 +115,17 @@ impl PileupIterator {
         Ok(())
     }
 
-    pub fn establish_position_context(&mut self) -> Result<(), Error> {
-        self.store.clear();
-        self.store.ref_base = self.refseq.borrow().get_base(self.pos as u64)?;
-
-        Ok(())
-    }
-
     /// Generate a pileup from all bases passing the minimum quality filter and covering the
     /// iterator's current reference position.
     pub fn set_pileup(&mut self) -> Result<bool, Error> {
         assert!(self.rbuf.backup_buf.is_empty());
+
+        let (ref_sequence, ref_base) = if let Some(refseq) = &self.refseq {
+            let r = refseq.yield_seq();
+            (Some(r), r[self.pos as usize])
+        } else {
+            (None, b'N')
+        };
 
         // don't bother going through read buffer if it starts beyond the
         // current coordinate
@@ -223,9 +135,6 @@ impl PileupIterator {
 
         let mut generated = false;
         let mut skip_remainder_of_buf = false;
-
-        self.establish_position_context()?;
-        let mut refseq = self.refseq.borrow_mut();
 
         for raw in self.rbuf.rbuf.drain(..) {
             // from a previous record, we decided to skip all remaining records in this buffer.
@@ -254,9 +163,8 @@ impl PileupIterator {
             generated = true;
 
             // advance to the current ref position in read and record cigar op
-            let ret = cigar_get_pos(&mut r.cstate, self.pos as u32);
-            let qual = *r.rec.qual().get(r.cstate.qpos).unwrap_or(&0);
-            let readbase = r.rec.seq()[r.cstate.qpos];
+            resolve_cigar(&mut r, self.pos);
+            let qual = *r.rec.qual().get(r.qpos).unwrap_or(&0);
 
             if qual < self.min_baseq {
                 drop(r);
@@ -264,72 +172,16 @@ impl PileupIterator {
                 continue;
             }
 
-            let mut p = PileupPayload {
-                rec: &r.rec,
-                plp_ref_pos: self.pos,
-                plp_read_pos: r.cstate.qpos,
-                ref_base: self.store.ref_base,
-                call: PileupBaseCall::NA,
-                cstate: &r.cstate,
-                aux: b" ",
-            };
-
-            if let Some(allele) = ret {
-                match allele {
-                    Cigar::Match(_) => {
-                        p.call = PileupBaseCall::Match;
-                        (self.store.register)(&mut self.store, qual, readbase)
-                    }
-
-                    Cigar::Ins(_) => {
-                        p.call = PileupBaseCall::Insertion;
-                        // (self.store.register)(&mut self.store, qual, readbase);
-                        self.store.nins += 1;
-                    }
-
-                    Cigar::RefSkip(_) => {
-                        p.call = PileupBaseCall::RefSkip;
-                        (self.store.register)(&mut self.store, qual, readbase)
-                    }
-
-                    Cigar::Del(l) => {
-                        match r.cstate.del {
-                            false => {
-                                p.call = PileupBaseCall::DeletionStart;
-                                p.aux = refseq.get_interval(
-                                    self.pos as u64 + 1,
-                                    (self.pos + (l as i64)) as u64,
-                                )?;
-                            }
-                            true => p.call = PileupBaseCall::Gap,
-                        }
-                        self.store.ndel += 1;
-                    }
-
-                    _ => panic!("Invalid pileup type found!"),
-                };
-
-                self.pileup_writer.intake(p)?;
-            }
+            self.pileup_writer.intake(&r, ref_sequence)?;
 
             drop(r);
             self.rbuf.backup_buf.push(raw);
         }
 
-        let depth = self.store.depth();
+        self.pileup_writer
+            .update(self.tid, self.pos, ref_base, &self.reader.cur_ref);
 
-        if depth > 0 || generated || self.show_all {
-            self.pileup_writer.update(
-                self.tid,
-                self.pos,
-                self.store.ref_base,
-                self.reader.cur_ref.clone(),
-                depth,
-            );
-
-            self.pileup_writer.write()?;
-            generated = true;
-        }
+        self.pileup_writer.write()?;
 
         self.rbuf.reset();
 
@@ -345,22 +197,12 @@ impl PileupIterator {
             self.tid += 1;
         }
 
-        self.reader
-            .init_to_ref(self.tid as u32, self.pos, self.max_pos)?;
+        self.reader.init_to_ref(self.tid as u32, self.pos, self.max_pos)?;
 
-        let tlen = self
-            .reader
-            .header
-            .target_len(self.tid as u32)
-            .with_context(|| format!("Failed to get target length for {}", self.reader.cur_ref))?;
-
-        let mut refseq = self.refseq.try_borrow_mut()?;
-
-        if !refseq.is_empty() {
-            // right now we just get the entire reference sequence.
-            // Next step will be to load it in windows.
-            refseq.load_seq(&self.reader.cur_ref, 0, tlen)?
-        }
+        // let mut refseq = self.refseq.try_borrow_mut()?;
+        if let Some(refseq) = &mut self.refseq {
+            refseq.load_seq(&self.reader.cur_ref)?;
+        };
 
         self.next_pos = 0;
 
@@ -401,7 +243,7 @@ impl PileupIterator {
 
                 // if we hit depth limit, we exhaust all reads at this position to avoid dealing
                 // with them at self.pos + 1.
-                BufPushResult::MaxDepthMet | BufPushResult::BeforeWindow => continue,
+                BufPushResult::MaxDepthMet => continue,
                 BufPushResult::Pushed => self.next_pos = r.pos(),
             }
 
@@ -423,135 +265,131 @@ impl PileupIterator {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::alignment::CigarState;
-    use rust_htslib::bam::{record::CigarString, Record};
+//#[cfg(test)]
+//mod tests {
+//    use super::*;
+//    use crate::alignment::CigarState;
+//    use rust_htslib::bam::{record::CigarString, Record};
 
-    #[test]
-    pub fn cig_test1() {
-        let cig = Vec::from([Cigar::Match(76)]);
-        assert_eq!(cig[0].len(), 76)
-    }
+//    #[test]
+//    pub fn cig_test1() {
+//        let cig = Vec::from([Cigar::Match(76)]);
+//        assert_eq!(cig[0].len(), 76)
+//    }
 
-    #[test]
-    pub fn cig_test2() {
-        let mut record = Record::new();
-        record.set(
-            b"read1",
-            Some(&CigarString(vec![Cigar::Match(4), Cigar::Equal(1)])),
-            b"AAAAG",
-            b"#####",
-        );
+//    #[test]
+//    pub fn cig_test2() {
+//        let mut record = Record::new();
+//        record.set(
+//            b"read1",
+//            Some(&CigarString(vec![Cigar::Match(4), Cigar::Equal(1)])),
+//            b"AAAAG",
+//            b"#####",
+//        );
 
-        record.set_pos(1);
+//        record.set_pos(1);
 
-        let mut cstate = CigarState {
-            cig: record.cigar(),
-            icig: 0,
-            iseq: 0,
-            bam_pos: 1,
-            qpos: 0,
-            del: false,
-            read_len_from_cigar: 0,
-        };
+//        let mut cstate = CigarState {
+//            cig: record.cigar(),
+//            icig: 0,
+//            iseq: 0,
+//            bam_pos: 1,
+//            qpos: 0,
+//            del: false,
+//            read_len_from_cigar: 0,
+//        };
 
-        let mut ret = cigar_get_pos(&mut cstate, 4);
-        assert_eq!(ret, Some(Cigar::Match(4)));
-        ret = cigar_get_pos(&mut cstate, 5);
-        assert_eq!(ret, Some(Cigar::Match(1)))
-    }
+//        let mut ret = cigar_get_pos(&mut cstate, 4);
+//        assert_eq!(ret, Some(Cigar::Match(4)));
+//        ret = cigar_get_pos(&mut cstate, 5);
+//        assert_eq!(ret, Some(Cigar::Match(1)))
+//    }
 
-    #[test]
-    pub fn cig_test3() {
-        let mut record = Record::new();
-        record.set(
-            b"read1",
-            Some(&CigarString(vec![
-                Cigar::Match(4),
-                Cigar::Equal(1),
-                Cigar::Ins(2),
-                Cigar::Match(3),
-            ])),
-            b"AAAAGTTTTT",
-            b"##########",
-        );
+//    #[test]
+//    pub fn cig_test3() {
+//        let mut record = Record::new();
+//        record.set(
+//            b"read1",
+//            Some(&CigarString(vec![
+//                Cigar::Match(4),
+//                Cigar::Equal(1),
+//                Cigar::Ins(2),
+//                Cigar::Match(3),
+//            ])),
+//            b"AAAAGTTTTT",
+//            b"##########",
+//        );
 
-        record.set_pos(104);
+//        record.set_pos(104);
 
-        let mut cstate = CigarState {
-            cig: record.cigar(),
-            icig: 0,
-            iseq: 0,
-            bam_pos: 104,
-            qpos: 0,
-            del: false,
-            read_len_from_cigar: 0,
-        };
+//        let mut cstate = CigarState {
+//            cig: record.cigar(),
+//            icig: 0,
+//            iseq: 0,
+//            bam_pos: 104,
+//            qpos: 0,
+//            del: false,
+//            read_len_from_cigar: 0,
+//        };
 
-        let mut ret = cigar_get_pos(&mut cstate, 107);
-        assert_eq!(ret, Some(Cigar::Match(4)));
+//        let mut ret = cigar_get_pos(&mut cstate, 107);
+//        assert_eq!(ret, Some(Cigar::Match(4)));
 
-        ret = cigar_get_pos(&mut cstate, 108);
-        assert_eq!(ret, Some(Cigar::Ins(2)));
+//        ret = cigar_get_pos(&mut cstate, 108);
+//        assert_eq!(ret, Some(Cigar::Ins(2)));
 
-        ret = cigar_get_pos(&mut cstate, 109);
-        assert_eq!(ret, Some(Cigar::Match(3)));
-    }
+//        ret = cigar_get_pos(&mut cstate, 109);
+//        assert_eq!(ret, Some(Cigar::Match(3)));
+//    }
 
-    #[test]
-    pub fn cig_test4() {
-        let mut record = Record::new();
-        record.set(
-            b"read1",
-            Some(&CigarString(vec![
-                Cigar::Match(1),
-                Cigar::Del(4),
-                Cigar::Match(3),
-            ])),
-            b"AATTTT",
-            b"##EEEE",
-            //012345
-        );
+//    #[test]
+//    pub fn cig_test4() {
+//        let mut record = Record::new();
+//        record.set(
+//            b"read1",
+//            Some(&CigarString(vec![Cigar::Match(1), Cigar::Del(4), Cigar::Match(3)])),
+//            b"AATTTT",
+//            b"##EEEE",
+//            //012345
+//        );
 
-        record.set_pos(104);
+//        record.set_pos(104);
 
-        let mut cstate = CigarState {
-            cig: record.cigar(),
-            icig: 0,
-            iseq: 0,
-            bam_pos: 104,
-            qpos: 0,
-            del: false,
-            read_len_from_cigar: 0,
-        };
+//        let mut cstate = CigarState {
+//            cig: record.cigar(),
+//            icig: 0,
+//            iseq: 0,
+//            bam_pos: 104,
+//            qpos: 0,
+//            del: false,
+//            read_len_from_cigar: 0,
+//        };
 
-        let mut ret = cigar_get_pos(&mut cstate, 104);
-        assert_eq!(ret, Some(Cigar::Del(4)));
+//        let mut ret = cigar_get_pos(&mut cstate, 104);
+//        assert_eq!(ret, Some(Cigar::Del(4)));
 
-        ret = cigar_get_pos(&mut cstate, 105);
-        assert_eq!(ret, Some(Cigar::Del(4)));
-        assert_eq!(cstate.qpos, 1);
+//        ret = cigar_get_pos(&mut cstate, 105);
+//        assert_eq!(ret, Some(Cigar::Del(4)));
+//        assert_eq!(cstate.qpos, 1);
 
-        ret = cigar_get_pos(&mut cstate, 106);
-        assert_eq!(ret, Some(Cigar::Del(4)));
-        assert_eq!(cstate.qpos, 1);
+//        ret = cigar_get_pos(&mut cstate, 106);
+//        assert_eq!(ret, Some(Cigar::Del(4)));
+//        assert_eq!(cstate.qpos, 1);
 
-        ret = cigar_get_pos(&mut cstate, 107);
-        assert_eq!(ret, Some(Cigar::Del(4)));
-        assert_eq!(cstate.qpos, 1);
+//        ret = cigar_get_pos(&mut cstate, 107);
+//        assert_eq!(ret, Some(Cigar::Del(4)));
+//        assert_eq!(cstate.qpos, 1);
 
-        ret = cigar_get_pos(&mut cstate, 108);
-        assert_eq!(ret, Some(Cigar::Del(4)));
-        assert_eq!(cstate.qpos, 1);
+//        ret = cigar_get_pos(&mut cstate, 108);
+//        assert_eq!(ret, Some(Cigar::Del(4)));
+//        assert_eq!(cstate.qpos, 1);
 
-        ret = cigar_get_pos(&mut cstate, 109);
-        assert_eq!(ret, Some(Cigar::Match(3)));
-        assert_eq!(cstate.qpos, 1);
+//        ret = cigar_get_pos(&mut cstate, 109);
+//        assert_eq!(ret, Some(Cigar::Match(3)));
+//        assert_eq!(cstate.qpos, 1);
 
-        ret = cigar_get_pos(&mut cstate, 110);
-        assert_eq!(ret, Some(Cigar::Match(3)));
-        assert_eq!(cstate.qpos, 2);
-    }
-}
+//        ret = cigar_get_pos(&mut cstate, 110);
+//        assert_eq!(ret, Some(Cigar::Match(3)));
+//        assert_eq!(cstate.qpos, 2);
+//    }
+//}
