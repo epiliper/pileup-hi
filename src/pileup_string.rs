@@ -11,7 +11,6 @@ const R_MATCH: u8 = b',';
 
 const F_REFSKIP: u8 = b'>';
 const R_REFSKIP: u8 = b'<';
-
 pub struct PileupString {
     seqbuf: Vec<u8>,
     qualbuf: Vec<u8>,
@@ -19,7 +18,7 @@ pub struct PileupString {
     ref_name: String,
     ref_pos: i64,
     ref_base: u8,
-    depth: u64,
+    pub depth: u64,
 }
 
 impl PileupString {
@@ -111,13 +110,15 @@ pub fn expand_insertions(p: &PileupAlignment, seq_buf: &mut Vec<u8>, ndel: &mut 
 
     // then produce the sequence representing the insertion
     k = p.cigar_index + 1;
+    let mut offset = 1;
     while k < ncig {
         match p.cstate.cig[k] {
             Cigar::Pad(l) => seq_buf.extend(std::iter::repeat_n(b'*', l as usize)),
             Cigar::Ins(l) => {
-                for i in 1..=l as usize {
-                    read_pos = p.qpos + i - p.del as usize;
+                for _ in 0..l as usize {
+                    read_pos = p.qpos + offset - p.del as usize;
                     read_base = p.rec.seq()[read_pos];
+                    offset += 1;
                     match is_rev {
                         true => seq_buf.push(read_base.to_ascii_lowercase()),
                         false => seq_buf.push(read_base.to_ascii_uppercase()),
@@ -160,7 +161,7 @@ pub fn write_plp(
             };
             let readbase = p.rec.seq()[p.qpos];
 
-            if readbase == refbase {
+            if readbase.eq_ignore_ascii_case(&refbase) {
                 match is_rev {
                     true => seq_buf.push(R_MATCH),
                     false => seq_buf.push(F_MATCH),

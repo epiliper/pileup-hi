@@ -122,7 +122,7 @@ impl PileupIterator {
 
         let (ref_sequence, ref_base) = if let Some(refseq) = &self.refseq {
             let r = refseq.yield_seq();
-            (Some(r), r[self.pos as usize])
+            (Some(r), *r.get(self.pos as usize).unwrap_or(&b'N'))
         } else {
             (None, b'N')
         };
@@ -135,6 +135,9 @@ impl PileupIterator {
 
         let mut generated = false;
         let mut skip_remainder_of_buf = false;
+
+        self.pileup_writer
+            .update(self.tid, self.pos, ref_base, &self.reader.cur_ref);
 
         for raw in self.rbuf.rbuf.drain(..) {
             // from a previous record, we decided to skip all remaining records in this buffer.
@@ -178,10 +181,9 @@ impl PileupIterator {
             self.rbuf.backup_buf.push(raw);
         }
 
-        self.pileup_writer
-            .update(self.tid, self.pos, ref_base, &self.reader.cur_ref);
-
-        self.pileup_writer.write()?;
+        if self.pileup_writer.depth > 0 || self.show_all {
+            self.pileup_writer.write()?;
+        }
 
         self.rbuf.reset();
 
