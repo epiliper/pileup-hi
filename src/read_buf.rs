@@ -21,6 +21,7 @@ pub enum BufPushResult {
 }
 
 impl ReadBuffer {
+    #[inline(always)]
     pub fn attempt_push(&mut self, r: &Record, pos: i64, tid: i32) -> BufPushResult {
         if r.is_unmapped() {
             return BufPushResult::Unmapped;
@@ -98,8 +99,8 @@ impl ReadBuffer {
     pub fn reset(&mut self) {
         assert!(self.rbuf.is_empty());
         std::mem::swap(&mut self.rbuf, &mut self.backup_buf);
-        if let Some(ov) = &mut self.overlap_map {
-            ov.shrink_to_fit();
-        }
+        // if let Some(ov) = &mut self.overlap_map {
+        //     ov.shrink_to_fit();
+        // }
     }
 }

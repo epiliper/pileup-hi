@@ -2,7 +2,7 @@ use crate::alignment::PileupAlignment;
 use crate::output::OrderedPileupOutput;
 use anyhow::Error;
 use rust_htslib::bam::record::Cigar;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
 const LAST_POS: u8 = b'$';
 const FIRST_POS: u8 = b'^';
@@ -13,6 +13,8 @@ const R_MATCH: u8 = b',';
 const F_REFSKIP: u8 = b'>';
 const R_REFSKIP: u8 = b'<';
 
+const OUTPUT_BUF_SIZE_BYTES: usize = 1024 * 1024;
+
 pub struct PileupString {
     seqbuf: Vec<u8>,
     qualbuf: Vec<u8>,
@@ -21,7 +23,7 @@ pub struct PileupString {
     ref_pos: i64,
     ref_base: u8,
     pub depth: u32,
-    lock: std::io::StdoutLock<'static>,
+    lock: BufWriter<std::io::StdoutLock<'static>>,
 }
 
 impl OrderedPileupOutput for PileupString {
@@ -66,31 +68,48 @@ impl PileupString {
         }
     }
 
+    #[inline(always)]
     pub fn intake(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error> {
         self.depth += 1;
         write_plp(p, self.ref_pos, &mut self.seqbuf, &mut self.qualbuf, refseq)?;
         Ok(())
     }
 
+    #[inline(always)]
     pub fn write(&mut self) -> Result<(), Error> {
-        print! {"{}\t{}\t{}\t{}\t", self.ref_name, self.ref_pos + 1, char::from(self.ref_base), self.depth }
+        let mut buf = itoa::Buffer::new();
+        // print! {"{}\t{}\t{}\t{}\t", self.ref_name, self.ref_pos + 1, char::from(self.ref_base), self.depth }
+        self.lock.write_all(self.ref_name.as_bytes())?;
+        self.lock.write_all(b"\t")?;
+
+        self.lock.write_all(buf.format(self.ref_pos + 1).as_bytes())?;
+        self.lock.write_all(b"\t")?;
+
+        self.lock.write_all(&[self.ref_base])?;
+        self.lock.write_all(b"\t")?;
+
+        self.lock.write_all(buf.format(self.depth).as_bytes())?;
+        self.lock.write_all(b"\t")?;
 
         if self.seqbuf.is_empty() {
-            write!(self.lock, "*\t")?
+            // write!(self.lock, "*\t")?
+            self.lock.write_all(b"*\t")?
             // print! {"*\t"}
         } else {
-            unsafe {
-                write!(self.lock, "{}\t", std::str::from_utf8_unchecked(&self.seqbuf))?;
-            }
+            // write!(self.lock, "{}\t", std::str::from_utf8_unchecked(&self.seqbuf))?;
+            self.lock.write_all(&self.seqbuf)?;
+            self.lock.write_all(b"\t")?;
             // print! {"{}\t", std::str::from_utf8(&self.seqbuf)?}
             self.seqbuf.clear();
         }
 
         if self.qualbuf.is_empty() {
-            write!(self.lock, "*")?
+            // write!(self.lock, "*")?
+            self.lock.write_all(b"*")?;
         } else {
             // print! {"{}", std::str::from_utf8(&self.qualbuf)?}
-            unsafe { write!(self.lock, "{}", std::str::from_utf8_unchecked(&self.qualbuf))? }
+            // unsafe { write!(self.lock, "{}", std::str::from_utf8_unchecked(&self.qualbuf))? }
+            self.lock.write_all(&self.qualbuf)?;
             self.qualbuf.clear();
         }
 
@@ -103,7 +122,8 @@ impl PileupString {
 
     pub fn new() -> Self {
         let s = std::io::stdout();
-        let lock = s.lock();
+        let _lock = s.lock();
+        let lock = BufWriter::with_capacity(OUTPUT_BUF_SIZE_BYTES, _lock);
         Self {
             lock,
             tid: 0,
@@ -127,6 +147,7 @@ pub fn get_qual(qual: u8) -> u8 {
 
 // TODO: take arguments that determine verbosity of reported insertion, e.g. full sequence or just
 // length?
+#[inline(always)]
 pub fn expand_insertions(
     p: &PileupAlignment,
     seq_buf: &mut Vec<u8>,
@@ -185,6 +206,7 @@ pub fn expand_insertions(
     Ok(())
 }
 
+#[inline(always)]
 pub fn write_plp(
     p: &PileupAlignment,
     pos: i64,

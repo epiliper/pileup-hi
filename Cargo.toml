@@ -16,6 +16,7 @@ itoa = "1.0.15"
 
 [profile.release]
 # debug = true
+debug = false
 opt-level = 3
 lto = "fat"
 codegen-units = 1

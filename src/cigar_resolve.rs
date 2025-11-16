@@ -1,6 +1,7 @@
 use crate::alignment::{PileupAlignment, CIGAR_STATE_UNINIT};
 use rust_htslib::bam::record::Cigar;
 
+#[inline(always)]
 pub fn resolve_cigar(plp: &mut PileupAlignment, pos: i64) {
     let cs = &mut plp.cstate;
     let cig = &cs.cig;

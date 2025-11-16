@@ -104,6 +104,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
     /// Generate a pileup from all bases passing the minimum quality filter and covering the
     /// iterator's current reference position.
+    #[inline(always)]
     pub fn set_pileup(&mut self) -> Result<bool, Error> {
         assert!(self.rbuf.backup_buf.is_empty());
 
@@ -191,6 +192,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         Ok(IterResult::Generated)
     }
 
+    #[inline(always)]
     pub fn next(&mut self) -> Result<IterResult, Error> {
         while self.pos < self.next_pos {
             self.set_pileup()?;

@@ -2,7 +2,12 @@ use crate::{alignment::PileupAlignment, output::OrderedPileupOutput};
 use anyhow::Error;
 use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
-use std::{io::Write, ops::AddAssign};
+use std::{
+    io::{BufWriter, Write},
+    ops::AddAssign,
+};
+
+const OUTPUT_BUFFER_CAP: usize = 1024 * 1024;
 
 pub struct BaseDepthString {
     tid: i32,
@@ -18,7 +23,7 @@ pub struct BaseDepthString {
     refskip: u32,
     insertions: IndexMap<Vec<u8>, u32>,
     deletions: IndexMap<Vec<u8>, u32>,
-    lock: std::io::StdoutLock<'static>,
+    lock: BufWriter<std::io::StdoutLock<'static>>,
 }
 
 impl OrderedPileupOutput for BaseDepthString {
@@ -34,14 +39,17 @@ impl OrderedPileupOutput for BaseDepthString {
         self.update(tid, pos, ref_name);
     }
 
+    #[inline(always)]
     fn intake(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error> {
         self.intake(p, refseq)
     }
 
+    #[inline(always)]
     fn write(&mut self) -> Result<(), Error> {
         self.write()
     }
 
+    #[inline(always)]
     fn depth(&self) -> u32 {
         self.depth
     }
@@ -50,7 +58,8 @@ impl OrderedPileupOutput for BaseDepthString {
 impl BaseDepthString {
     pub fn new() -> Self {
         let s = std::io::stdout();
-        let lock = s.lock();
+        let _lock = s.lock();
+        let lock = BufWriter::with_capacity(OUTPUT_BUFFER_CAP, _lock);
         Self {
             lock,
             tid: 0,
@@ -153,11 +162,13 @@ impl BaseDepthString {
         }
     }
 
+    #[inline(always)]
     pub fn intake(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error> {
         self.depth += 1;
         self.register_pileup(p, refseq)
     }
 
+    #[inline(always)]
     pub fn register_pileup(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error> {
         match p.del {
             false => {
@@ -209,6 +220,7 @@ impl BaseDepthString {
     }
 }
 
+#[inline(always)]
 pub fn expand_insertions(p: &PileupAlignment, seq_buf: &mut Vec<u8>, ndel: &mut i32) -> Result<(), Error> {
     let mut read_pos: usize;
     let mut read_base: u8;
