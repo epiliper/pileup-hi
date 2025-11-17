@@ -33,13 +33,6 @@
 # INIT x $samtools index xx#depth3.bam
 
 # Nasty file corner cases
-# P 1.out $samtools mpileup -B -Q0 -x -f ce.fa ce#large_seq.bam 
-# P 2.out $samtools mpileup -Q0 -x -f ce.fa ce#unmap.bam
-# P 3.out $samtools mpileup -Q0 -x -f ce.fa ce#unmap1.bam
-# P 4.out $samtools mpileup -Q0 -x -f ce.fa ce#unmap2.bam
-# P 5.out $samtools mpileup -Q0 -x -f c1.fa c1#clip.bam
-# P 6.out $samtools mpileup -Q0 -x -f c1.fa c1#pad1.bam
-# P 7.out $samtools mpileup -Q0 -x -f c1.fa c1#pad2.bam
 P 1.out viggo plp -Q0 -x -f ce.fa ce#large_seq.bam 
 P 2.out viggo plp -Q0 -x -f ce.fa ce#unmap.bam
 P 3.out viggo plp -Q0 -x -f ce.fa ce#unmap1.bam

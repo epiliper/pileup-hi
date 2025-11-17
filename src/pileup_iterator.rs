@@ -164,7 +164,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             self.rbuf.backup_buf.push(raw);
         }
 
-        if self.writer.depth() > 0 || self.show_all {
+        if generated || self.writer.depth() > 0 || self.show_all {
             self.writer.write()?;
         }
 

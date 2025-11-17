@@ -122,9 +122,8 @@ impl BaseDepthString {
         self.lock.write_all(b"\t")?;
 
         self.lock.write_all(buf.format(self.refskip).as_bytes())?;
-        self.lock.write_all(b"\t")?;
 
-        self.lock.write_all(b"[")?;
+        self.lock.write_all(b"\t[")?;
 
         let n = self.insertions.len() - 1;
         for (i, (ins, cnt)) in self.insertions.iter().enumerate() {
