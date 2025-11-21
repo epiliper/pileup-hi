@@ -2,13 +2,11 @@ use crate::{alignment::PileupAlignment, output::OrderedPileupOutput};
 use anyhow::Error;
 use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
-use std::{
-    io::{BufWriter, Write},
-    ops::AddAssign,
-};
+use std::ops::AddAssign;
 
 const OUTPUT_BUFFER_CAP: usize = 1024 * 1024;
 
+#[derive(Clone)]
 pub struct BaseDepthString {
     tid: i32,
     pos: i64,
@@ -23,8 +21,10 @@ pub struct BaseDepthString {
     refskip: u32,
     insertions: IndexMap<Vec<u8>, u32>,
     deletions: IndexMap<Vec<u8>, u32>,
-    lock: BufWriter<std::io::StdoutLock<'static>>,
 }
+
+unsafe impl Sync for BaseDepthString {}
+unsafe impl Send for BaseDepthString {}
 
 impl OrderedPileupOutput for BaseDepthString {
     fn tid(&self) -> i32 {
@@ -45,8 +45,8 @@ impl OrderedPileupOutput for BaseDepthString {
     }
 
     #[inline(always)]
-    fn write(&mut self) -> Result<(), Error> {
-        self.write()
+    fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
+        self.write(writer)
     }
 
     #[inline(always)]
@@ -57,11 +57,7 @@ impl OrderedPileupOutput for BaseDepthString {
 
 impl BaseDepthString {
     pub fn new() -> Self {
-        let s = std::io::stdout();
-        let _lock = s.lock();
-        let lock = BufWriter::with_capacity(OUTPUT_BUFFER_CAP, _lock);
         Self {
-            lock,
             tid: 0,
             pos: 0,
             ref_name: "".to_string(),
@@ -91,62 +87,62 @@ impl BaseDepthString {
         self.deletions.clear();
     }
 
-    pub fn write(&mut self) -> Result<(), Error> {
+    pub fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
 
-        self.lock.write_all(self.ref_name.as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(self.ref_name.as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.pos + 1).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.pos + 1).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.depth).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.depth).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.a).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.a).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.g).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.g).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.c).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.c).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.t).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.t).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.n).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.n).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.gap).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.gap).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.refskip).as_bytes())?;
+        writer.write_all(buf.format(self.refskip).as_bytes())?;
 
-        self.lock.write_all(b"\t[")?;
+        writer.write_all(b"\t[")?;
 
         let n = self.insertions.len() - 1;
         for (i, (ins, cnt)) in self.insertions.iter().enumerate() {
-            self.lock.write_all(buf.format(*cnt).as_bytes())?;
-            self.lock.write_all(ins)?;
+            writer.write_all(buf.format(*cnt).as_bytes())?;
+            writer.write_all(ins)?;
             if i < n {
-                self.lock.write_all(b" ")?
+                writer.write_all(b" ")?
             };
         }
 
-        self.lock.write_all(b"]\t[")?;
+        writer.write_all(b"]\t[")?;
 
         let n = self.deletions.len() - 1;
         for (i, (del, cnt)) in self.deletions.iter().enumerate() {
-            self.lock.write_all(buf.format(*cnt).as_bytes())?;
-            self.lock.write_all(del)?;
+            writer.write_all(buf.format(*cnt).as_bytes())?;
+            writer.write_all(del)?;
             if i < n {
-                self.lock.write_all(b" ")?
+                writer.write_all(b" ")?
             };
         }
 
-        write!(self.lock, "]")?;
-        writeln!(self.lock)?;
+        write!(writer, "]")?;
+        writeln!(writer)?;
 
         self.reset();
 

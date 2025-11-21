@@ -1,9 +1,9 @@
 use crate::{
     bamio::{BamDataSource, BamReader},
     cigar_resolve::resolve_cigar,
-    output::OrderedPileupOutput,
+    output::{OrderedPileupOutput, OutputMethod},
     params::PileupParams,
-    position_queue::PositionQueue,
+    position_queue::{GenomeInterval, PositionQueue},
     read_buf::{BufPushResult, ReadBuffer},
     read_filter::ReadFilter,
     refseq::RefSeq,
@@ -16,16 +16,74 @@ use rust_htslib::bam::Record;
 pub const UNINIT_POS: i64 = i64::MAX - 1;
 pub const UNINIT_TID: i32 = i32::MAX - 1;
 
+pub fn generate_pileup<T: OrderedPileupOutput>(
+    rbuf: &mut ReadBuffer,
+    ref_sequence: &Option<&[u8]>,
+    out: &mut T,
+    pos: i64,
+    min_baseq: u8,
+) -> Result<bool, Error> {
+    let mut skip_remainder_of_buf = false;
+    let mut generated = false;
+
+    for raw in rbuf.rbuf.drain(..) {
+        // from a previous record, we decided to skip all remaining records in this buffer.
+        if skip_remainder_of_buf {
+            rbuf.backup_buf.push(raw);
+            continue;
+        }
+
+        let mut r = raw.borrow_mut();
+
+        // record starts beyond position, which means that the remainder of the buffer does
+        // too. Skip the rest of the records.
+        if r.rec.pos() > pos {
+            drop(r);
+            rbuf.backup_buf.push(raw);
+            skip_remainder_of_buf = true;
+            continue;
+        }
+
+        // record is old and no longer overlaps the query coordinate. Discard.
+        if read_ends_before_pos(&r, pos) {
+            rbuf.depth -= 1;
+            continue;
+        }
+
+        generated = true;
+
+        // advance to the current ref position in read and record cigar op
+        resolve_cigar(&mut r, pos);
+        let qual = *r.rec.qual().get(r.qpos).unwrap_or(&0);
+
+        if qual < min_baseq {
+            drop(r);
+            rbuf.backup_buf.push(raw);
+            continue;
+        }
+
+        // self.output.intake(&r, ref_sequence)?;
+        out.intake(&r, *ref_sequence)?;
+
+        drop(r);
+        rbuf.backup_buf.push(raw);
+    }
+
+    rbuf.reset();
+    Ok(generated)
+}
+
 /// The iterator responsible for coordinate-wise traversal of a BAM reference/region.
 /// Maintains a buffer of pileups, iterator state (current reference and position), and
 /// auxiliary structs needed for variant detection and output.
-pub struct PileupIterator<T: OrderedPileupOutput> {
+pub struct PileupIterator<T: OrderedPileupOutput, W: std::io::Write> {
     tid: i32,
     pos: i64,
     next_pos: i64,
     pub max_pos: i64,
     rbuf: ReadBuffer,
-    writer: T,
+    output: Option<T>,
+    dest: OutputMethod<W, T>,
     pub reader: BamReader,
     refseq: Option<RefSeq>,
     read_filter: ReadFilter,
@@ -40,9 +98,9 @@ pub enum IterResult {
     NoData,
 }
 
-impl<T: OrderedPileupOutput> PileupIterator<T> {
-    pub fn new(src: &BamDataSource, params: &PileupParams, output: T) -> Result<Self, Error> {
-        let reader = BamReader::new(src, num_cpus::get())?;
+impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
+    pub fn new(src: &BamDataSource, params: &PileupParams, output: T, dest: OutputMethod<W, T>) -> Result<Self, Error> {
+        let reader = BamReader::new(src, 2)?;
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
 
@@ -73,7 +131,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             next_pos,
             max_pos,
             rbuf,
-            writer: output,
+            output: Some(output),
+            dest,
             reader,
             read_filter,
             refseq,
@@ -83,13 +142,19 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         })
     }
 
+    pub fn init_to_region(&mut self, reg: &GenomeInterval) -> Result<(), Error> {
+        self.tid = i32::try_from(reg.tid)?;
+        self.pos = reg.start;
+        self.next_pos = reg.start;
+        self.max_pos = reg.end;
+        self.init_to_ref(false)?;
+
+        Ok(())
+    }
+
     pub fn _auto_loop(&mut self, queue: &PositionQueue) -> Result<(), Error> {
         for reg in &queue.queue {
-            self.tid = i32::try_from(reg.tid)?;
-            self.pos = reg.start;
-            self.next_pos = reg.start;
-            self.max_pos = reg.end;
-            self.init_to_ref(false)?;
+            self.init_to_region(reg)?;
 
             loop {
                 match self.next()? {
@@ -105,72 +170,42 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     /// Generate a pileup from all bases passing the minimum quality filter and covering the
     /// iterator's current reference position.
     #[inline(always)]
-    pub fn set_pileup(&mut self) -> Result<bool, Error> {
+    pub fn set_pileup(&mut self) -> Result<(), Error> {
         assert!(self.rbuf.backup_buf.is_empty());
-
-        let ref_sequence = self.refseq.as_ref().map(|r| r.yield_seq());
 
         // don't bother going through read buffer if it starts beyond the
         // current coordinate
         if self.rbuf.start() > self.pos {
-            return Ok(false);
+            return Ok(());
         }
 
-        let mut generated = false;
-        let mut skip_remainder_of_buf = false;
+        let dest = &mut self.dest;
 
-        self.writer
-            .set_ref_info(self.tid, self.pos, &self.reader.cur_ref, ref_sequence);
+        let ref_sequence = &mut self.refseq.as_ref().map(|r| r.yield_seq());
+        let rbuf = &mut self.rbuf;
 
-        for raw in self.rbuf.rbuf.drain(..) {
-            // from a previous record, we decided to skip all remaining records in this buffer.
-            if skip_remainder_of_buf {
-                self.rbuf.backup_buf.push(raw);
-                continue;
+        match dest {
+            OutputMethod::WriteDirectly(ref mut writer) => {
+                let mut output = self.output.take().unwrap();
+                output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
+                let generated = generate_pileup(rbuf, ref_sequence, &mut output, self.pos, self.min_baseq)?;
+                if generated || output.depth() > 0 || self.show_all {
+                    output.write(writer)?;
+                }
+                self.output = Some(output);
             }
 
-            let mut r = raw.borrow_mut();
-
-            // record starts beyond position, which means that the remainder of the buffer does
-            // too. Skip the rest of the records.
-            if r.rec.pos() > self.pos {
-                drop(r);
-                self.rbuf.backup_buf.push(raw);
-                skip_remainder_of_buf = true;
-                continue;
+            OutputMethod::QueueForOutput(sender) => {
+                let mut output = self.output.as_ref().unwrap().clone();
+                output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
+                let generated = generate_pileup(rbuf, ref_sequence, &mut output, self.pos, self.min_baseq)?;
+                if generated || output.depth() > 0 || self.show_all {
+                    sender.send(output)?;
+                }
             }
-
-            // record is old and no longer overlaps the query coordinate. Discard.
-            if read_ends_before_pos(&r, self.pos) {
-                self.rbuf.depth -= 1;
-                continue;
-            }
-
-            generated = true;
-
-            // advance to the current ref position in read and record cigar op
-            resolve_cigar(&mut r, self.pos);
-            let qual = *r.rec.qual().get(r.qpos).unwrap_or(&0);
-
-            if qual < self.min_baseq {
-                drop(r);
-                self.rbuf.backup_buf.push(raw);
-                continue;
-            }
-
-            self.writer.intake(&r, ref_sequence)?;
-
-            drop(r);
-            self.rbuf.backup_buf.push(raw);
         }
 
-        if generated || self.writer.depth() > 0 || self.show_all {
-            self.writer.write()?;
-        }
-
-        self.rbuf.reset();
-
-        Ok(generated)
+        Ok(())
     }
 
     pub fn init_to_ref(&mut self, inc: bool) -> Result<IterResult, Error> {
@@ -204,6 +239,10 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             let r = &self.cur_rec;
 
             if r.is_unmapped() {
+                continue;
+            }
+
+            if r.pos() < self.pos {
                 continue;
             }
 
@@ -248,132 +287,3 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         Ok(IterResult::NoData)
     }
 }
-
-//#[cfg(test)]
-//mod tests {
-//    use super::*;
-//    use crate::alignment::CigarState;
-//    use rust_htslib::bam::{record::CigarString, Record};
-
-//    #[test]
-//    pub fn cig_test1() {
-//        let cig = Vec::from([Cigar::Match(76)]);
-//        assert_eq!(cig[0].len(), 76)
-//    }
-
-//    #[test]
-//    pub fn cig_test2() {
-//        let mut record = Record::new();
-//        record.set(
-//            b"read1",
-//            Some(&CigarString(vec![Cigar::Match(4), Cigar::Equal(1)])),
-//            b"AAAAG",
-//            b"#####",
-//        );
-
-//        record.set_pos(1);
-
-//        let mut cstate = CigarState {
-//            cig: record.cigar(),
-//            icig: 0,
-//            iseq: 0,
-//            bam_pos: 1,
-//            qpos: 0,
-//            del: false,
-//            read_len_from_cigar: 0,
-//        };
-
-//        let mut ret = cigar_get_pos(&mut cstate, 4);
-//        assert_eq!(ret, Some(Cigar::Match(4)));
-//        ret = cigar_get_pos(&mut cstate, 5);
-//        assert_eq!(ret, Some(Cigar::Match(1)))
-//    }
-
-//    #[test]
-//    pub fn cig_test3() {
-//        let mut record = Record::new();
-//        record.set(
-//            b"read1",
-//            Some(&CigarString(vec![
-//                Cigar::Match(4),
-//                Cigar::Equal(1),
-//                Cigar::Ins(2),
-//                Cigar::Match(3),
-//            ])),
-//            b"AAAAGTTTTT",
-//            b"##########",
-//        );
-
-//        record.set_pos(104);
-
-//        let mut cstate = CigarState {
-//            cig: record.cigar(),
-//            icig: 0,
-//            iseq: 0,
-//            bam_pos: 104,
-//            qpos: 0,
-//            del: false,
-//            read_len_from_cigar: 0,
-//        };
-
-//        let mut ret = cigar_get_pos(&mut cstate, 107);
-//        assert_eq!(ret, Some(Cigar::Match(4)));
-
-//        ret = cigar_get_pos(&mut cstate, 108);
-//        assert_eq!(ret, Some(Cigar::Ins(2)));
-
-//        ret = cigar_get_pos(&mut cstate, 109);
-//        assert_eq!(ret, Some(Cigar::Match(3)));
-//    }
-
-//    #[test]
-//    pub fn cig_test4() {
-//        let mut record = Record::new();
-//        record.set(
-//            b"read1",
-//            Some(&CigarString(vec![Cigar::Match(1), Cigar::Del(4), Cigar::Match(3)])),
-//            b"AATTTT",
-//            b"##EEEE",
-//            //012345
-//        );
-
-//        record.set_pos(104);
-
-//        let mut cstate = CigarState {
-//            cig: record.cigar(),
-//            icig: 0,
-//            iseq: 0,
-//            bam_pos: 104,
-//            qpos: 0,
-//            del: false,
-//            read_len_from_cigar: 0,
-//        };
-
-//        let mut ret = cigar_get_pos(&mut cstate, 104);
-//        assert_eq!(ret, Some(Cigar::Del(4)));
-
-//        ret = cigar_get_pos(&mut cstate, 105);
-//        assert_eq!(ret, Some(Cigar::Del(4)));
-//        assert_eq!(cstate.qpos, 1);
-
-//        ret = cigar_get_pos(&mut cstate, 106);
-//        assert_eq!(ret, Some(Cigar::Del(4)));
-//        assert_eq!(cstate.qpos, 1);
-
-//        ret = cigar_get_pos(&mut cstate, 107);
-//        assert_eq!(ret, Some(Cigar::Del(4)));
-//        assert_eq!(cstate.qpos, 1);
-
-//        ret = cigar_get_pos(&mut cstate, 108);
-//        assert_eq!(ret, Some(Cigar::Del(4)));
-//        assert_eq!(cstate.qpos, 1);
-
-//        ret = cigar_get_pos(&mut cstate, 109);
-//        assert_eq!(ret, Some(Cigar::Match(3)));
-//        assert_eq!(cstate.qpos, 1);
-
-//        ret = cigar_get_pos(&mut cstate, 110);
-//        assert_eq!(ret, Some(Cigar::Match(3)));
-//        assert_eq!(cstate.qpos, 2);
-//    }
-//}

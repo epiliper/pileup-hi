@@ -2,7 +2,7 @@ use crate::alignment::PileupAlignment;
 use crate::output::OrderedPileupOutput;
 use anyhow::Error;
 use rust_htslib::bam::record::Cigar;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 
 const LAST_POS: u8 = b'$';
 const FIRST_POS: u8 = b'^';
@@ -15,6 +15,7 @@ const R_REFSKIP: u8 = b'<';
 
 const OUTPUT_BUF_SIZE_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone)]
 pub struct PileupString {
     seqbuf: Vec<u8>,
     qualbuf: Vec<u8>,
@@ -23,8 +24,10 @@ pub struct PileupString {
     ref_pos: i64,
     ref_base: u8,
     pub depth: u32,
-    lock: BufWriter<std::io::StdoutLock<'static>>,
 }
+
+unsafe impl Send for PileupString {}
+unsafe impl Sync for PileupString {}
 
 impl OrderedPileupOutput for PileupString {
     fn tid(&self) -> i32 {
@@ -43,8 +46,8 @@ impl OrderedPileupOutput for PileupString {
         self.intake(p, refseq)
     }
 
-    fn write(&mut self) -> Result<(), Error> {
-        self.write()
+    fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
+        self.write(writer)
     }
 
     fn depth(&self) -> u32 {
@@ -76,44 +79,44 @@ impl PileupString {
     }
 
     #[inline(always)]
-    pub fn write(&mut self) -> Result<(), Error> {
+    pub fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
         // print! {"{}\t{}\t{}\t{}\t", self.ref_name, self.ref_pos + 1, char::from(self.ref_base), self.depth }
-        self.lock.write_all(self.ref_name.as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(self.ref_name.as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.ref_pos + 1).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.ref_pos + 1).as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(&[self.ref_base])?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(&[self.ref_base])?;
+        writer.write_all(b"\t")?;
 
-        self.lock.write_all(buf.format(self.depth).as_bytes())?;
-        self.lock.write_all(b"\t")?;
+        writer.write_all(buf.format(self.depth).as_bytes())?;
+        writer.write_all(b"\t")?;
 
         if self.seqbuf.is_empty() {
-            // write!(self.lock, "*\t")?
-            self.lock.write_all(b"*\t")?
+            // write!(writer, "*\t")?
+            writer.write_all(b"*\t")?
             // print! {"*\t"}
         } else {
-            // write!(self.lock, "{}\t", std::str::from_utf8_unchecked(&self.seqbuf))?;
-            self.lock.write_all(&self.seqbuf)?;
-            self.lock.write_all(b"\t")?;
+            // write!(writer, "{}\t", std::str::from_utf8_unchecked(&self.seqbuf))?;
+            writer.write_all(&self.seqbuf)?;
+            writer.write_all(b"\t")?;
             // print! {"{}\t", std::str::from_utf8(&self.seqbuf)?}
             self.seqbuf.clear();
         }
 
         if self.qualbuf.is_empty() {
-            // write!(self.lock, "*")?
-            self.lock.write_all(b"*")?;
+            // write!(writer, "*")?
+            writer.write_all(b"*")?;
         } else {
             // print! {"{}", std::str::from_utf8(&self.qualbuf)?}
-            // unsafe { write!(self.lock, "{}", std::str::from_utf8_unchecked(&self.qualbuf))? }
-            self.lock.write_all(&self.qualbuf)?;
+            // unsafe { write!(writer, "{}", std::str::from_utf8_unchecked(&self.qualbuf))? }
+            writer.write_all(&self.qualbuf)?;
             self.qualbuf.clear();
         }
 
-        writeln!(self.lock)?;
+        writeln!(writer)?;
 
         self.depth = 0;
 
@@ -121,11 +124,7 @@ impl PileupString {
     }
 
     pub fn new() -> Self {
-        let s = std::io::stdout();
-        let _lock = s.lock();
-        let lock = BufWriter::with_capacity(OUTPUT_BUF_SIZE_BYTES, _lock);
         Self {
-            lock,
             tid: 0,
             ref_pos: 0,
             ref_base: 0,

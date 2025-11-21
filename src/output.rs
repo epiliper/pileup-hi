@@ -1,17 +1,35 @@
 #![allow(dead_code)]
 use crate::{alignment::PileupAlignment, threading::PileupWorkerState};
 use anyhow::Error;
-use crossbeam::channel::{unbounded, Receiver, Sender};
-const PILEUP_OUTPUT_BUF_PURGE_THRES: usize = 3;
+use crossbeam::channel::{bounded, Receiver, Sender};
 
-pub trait OrderedPileupOutput {
+const PILEUP_OUTPUT_BUF_PURGE_THRES: usize = 10_000;
+
+/// The interface requirements for a pileup output. It needs to give ref information,
+/// intake pileup alignments, update current ref info, display depth, and write itself.
+pub trait OrderedPileupOutput: Send + Sync + Clone {
+    /// Get the reference of the pileup
     fn tid(&self) -> i32;
+    /// Get the coordinate of the pileup
     fn pos(&self) -> i64;
+    /// Update internal data with pileup alignment
     fn intake(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error>;
+    /// Update reference data given ref num, pos, name, and sequence
     fn set_ref_info(&mut self, tid: i32, pos: i64, ref_name: &str, ref_seq: Option<&[u8]>);
-    fn write(&mut self) -> Result<(), Error>;
+    fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error>;
     fn depth(&self) -> u32;
 }
+
+/// Defines how to get output data from iterators from a thread. If using a single thread, we dont'
+/// have to care about queue-ing output.
+pub enum OutputMethod<W: std::io::Write, T: OrderedPileupOutput> {
+    WriteDirectly(W),
+    QueueForOutput(Sender<T>),
+}
+
+////////////////
+// Begin defs for PileupOutputAggregator
+////////////////
 
 pub enum PileupOutputState<T: OrderedPileupOutput> {
     Closed,
@@ -26,7 +44,7 @@ where
     pub worker_state: PileupWorkerState,
 }
 
-impl<T: OrderedPileupOutput + Send + 'static> PileupOutputAggregator<T> {
+impl<T: OrderedPileupOutput + 'static> PileupOutputAggregator<T> {
     pub fn new() -> Self {
         Self {
             input_state: PileupOutputState::Closed,
@@ -56,45 +74,29 @@ impl<T: OrderedPileupOutput + Send + 'static> PileupOutputAggregator<T> {
     }
 
     pub fn run(&mut self) {
-        let (s, r): (Sender<T>, Receiver<T>) = unbounded();
+        let (s, r): (Sender<T>, Receiver<T>) = bounded(10_000_000);
         let j = std::thread::spawn(move || {
+            let mut writer = std::io::stdout().lock();
             let mut output_queue: Vec<T> = Vec::with_capacity(PILEUP_OUTPUT_BUF_PURGE_THRES);
-            let mut next_expected_order = 0;
 
-            // initialize next expected order
-            if let Ok(mut out) = r.recv() {
-                next_expected_order = out.pos();
-                out.write().unwrap();
-            }
-
-            while let Ok(mut out) = r.recv() {
-                if out.pos() == next_expected_order + 1 {
-                    next_expected_order += 1;
-                    out.write().unwrap();
-                    continue;
-                }
-
+            while let Ok(out) = r.recv() {
                 output_queue.push(out);
 
                 if output_queue.len() >= PILEUP_OUTPUT_BUF_PURGE_THRES {
-                    output_queue.sort_by(|a, b| a.tid().cmp(&b.tid()).then_with(|| a.pos().cmp(&b.pos())));
+                    // output_queue.sort_by(|a, b| a.tid().cmp(&b.tid()));
 
-                    let mut processable_count = 0;
-
-                    for item in &output_queue {
-                        if item.pos() == next_expected_order + 1 {
-                            processable_count += 1;
-                            next_expected_order += 1;
-                        }
-                    }
-
-                    for mut out in output_queue.drain(..processable_count) {
-                        out.write().unwrap();
+                    for mut out in output_queue.drain(..) {
+                        out.write(&mut writer).unwrap();
                     }
 
                     // output_queue.shrink_to(0);
                 }
             }
+
+            // output_queue.sort_by(|a, b| a.tid().cmp(&b.tid()));
+            output_queue
+                .drain(..)
+                .for_each(|mut item| item.write(&mut writer).unwrap())
         });
 
         self.worker_state = PileupWorkerState::Running(j);

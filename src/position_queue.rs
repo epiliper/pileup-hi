@@ -16,6 +16,84 @@ pub struct GenomeInterval {
     pub end: i64,
 }
 
+pub struct GenomeIntervalIterator<'a> {
+    cur_start: i64,
+    cur_end: i64,
+    chunk_size: i64,
+    interval: &'a GenomeInterval,
+    exhausted: bool,
+}
+
+impl<'a> GenomeIntervalIterator<'a> {
+    pub fn new(interval: &'a GenomeInterval, chunk_size: i64) -> Self {
+        Self {
+            cur_start: interval.start,
+            cur_end: interval.start + chunk_size,
+            chunk_size,
+            interval,
+            exhausted: false,
+        }
+    }
+}
+
+impl Iterator for GenomeIntervalIterator<'_> {
+    type Item = GenomeInterval;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let ret: Option<Self::Item>;
+        if self.exhausted {
+            return None;
+        };
+
+        if self.chunk_size > self.interval.end - self.interval.start + 1 {
+            self.exhausted = true;
+            return Some(self.interval.clone());
+        }
+
+        // start and end of next chunk is still within original interval
+        if self.cur_end < self.interval.end {
+            ret = Some(GenomeInterval {
+                tid: self.interval.tid,
+
+                start: self.cur_start,
+
+                end: self.cur_end,
+            });
+
+        // start is still within but end is outside. Clamp end to max coordinate.
+        } else if self.cur_start < self.interval.end {
+            ret = Some(GenomeInterval {
+                tid: self.interval.tid,
+                start: self.cur_start,
+                end: std::cmp::min(self.cur_end, self.interval.end),
+            });
+
+        // completely outside window
+        } else {
+            self.exhausted = true;
+            ret = None
+        }
+
+        // advance and yield
+        self.cur_start += self.chunk_size;
+        self.cur_end += self.chunk_size;
+
+        ret
+    }
+}
+
+impl GenomeInterval {
+    #[allow(dead_code)]
+    pub fn chunks(&self, chunk_size: i64) -> GenomeIntervalIterator<'_> {
+        GenomeIntervalIterator::new(self, chunk_size)
+    }
+
+    #[allow(dead_code)]
+    pub fn n_chunks(&self, n_chunks: i64) -> GenomeIntervalIterator<'_> {
+        GenomeIntervalIterator::new(self, (self.end - self.start + 1) / n_chunks + 1)
+    }
+}
+
 /// Parse any string for being compliant for the SAM region format, e.g.
 /// chr1:400-801
 fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
@@ -64,6 +142,7 @@ pub fn create_region_queue(argstr: &str, header: &HeaderView) -> Result<Position
     PositionQueue::new_from_regions(header, rawregions)
 }
 
+#[derive(Debug)]
 pub struct PositionQueue {
     pub queue: Vec<GenomeInterval>,
 }
@@ -74,10 +153,7 @@ impl PositionQueue {
         let mut queue = Vec::new();
 
         for tid in 0..header.target_count() {
-            let end = header
-                .target_len(tid)
-                .context("Unable to get target len")?
-                .try_into()?;
+            let end = header.target_len(tid).context("Unable to get target len")?.try_into()?;
 
             let reg = GenomeInterval {
                 // name: name.to_string(),
@@ -99,10 +175,7 @@ impl PositionQueue {
 
     /// Create a position queue from a list of pileup regions, validating to make sure they agree
     /// with the given SAM header.
-    pub fn new_from_regions(
-        header: &HeaderView,
-        regions: Vec<RawPileupRegion>,
-    ) -> Result<Self, Error> {
+    pub fn new_from_regions(header: &HeaderView, regions: Vec<RawPileupRegion>) -> Result<Self, Error> {
         if regions.is_empty() {
             anyhow::bail!("Cannot supply empty regions list to PositionQueue builder!");
         }
