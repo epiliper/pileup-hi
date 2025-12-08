@@ -152,10 +152,12 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
         Ok(())
     }
 
-    // pub fn _auto_loop_step(&mut self, queue: &PositionQueue, step: usize) {}
+    // Output each output T without gathering them all first. Ideal for single-threaded mode or when memory is low.
+    pub fn _auto_loop_output_each(&mut self, queue: &PositionQueue) -> Result<(), Error> {
+        if matches!(self.dest, OutputMethod::QueueForOutput(_)) {
+            anyhow::bail!("DEV: incompatible funcs; 'Output each' is not compatible with output queue")
+        }
 
-    /// Run the iterator over the entire region without interruption.
-    pub fn _auto_loop(&mut self, queue: &PositionQueue) -> Result<(), Error> {
         for reg in &queue.queue {
             self.init_to_region(reg)?;
 
@@ -165,21 +167,19 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
                     IterResult::Generated => continue,
                 }
             }
-
-            match &mut self.dest {
-                OutputMethod::WriteDirectly(_) => (),
-                OutputMethod::QueueForOutput(sender, outputs) => {
-                    for o in outputs.drain(..) {
-                        sender.send(o)?;
-                    }
-                }
-            }
         }
 
         Ok(())
     }
 
+    // gather all output T for a given region into a vec; ideally for delivery to a writer
+    // not compatible with OutputMethod::WriteDirectly, since we reuse the same output memory
+    // without copying.
     pub fn _auto_loop_yield_batch(mut self, queue: &PositionQueue) -> Result<Vec<T>, Error> {
+        if matches!(self.dest, OutputMethod::WriteDirectly(_)) {
+            anyhow::bail!("DEV: incompatible funcs; 'write directly' does not yield Vecs!");
+        }
+
         assert_eq!(queue.len(), 1);
         self.init_to_region(&queue.queue[0])?;
 
@@ -192,7 +192,7 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
 
         match &mut self.dest {
             OutputMethod::WriteDirectly(_) => anyhow::bail!("Cannot output vec of reads when we output them directly"),
-            OutputMethod::QueueForOutput(_sender, outputs) => {
+            OutputMethod::QueueForOutput(outputs) => {
                 let out = std::mem::take(outputs);
                 Ok(out)
             }
@@ -229,7 +229,7 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
                 self.output = Some(output);
             }
 
-            OutputMethod::QueueForOutput(_sender, output_chunk) => {
+            OutputMethod::QueueForOutput(output_chunk) => {
                 let mut output = T::new();
                 output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
                 let generated = generate_pileup(rbuf, ref_sequence, &mut output, self.pos, self.min_baseq)?;

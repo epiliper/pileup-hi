@@ -4,8 +4,6 @@ use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
 use std::ops::AddAssign;
 
-const OUTPUT_BUFFER_CAP: usize = 1024 * 8;
-
 #[derive(Clone)]
 pub struct BaseDepthString {
     tid: i32,

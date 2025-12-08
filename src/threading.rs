@@ -20,15 +20,9 @@ use std::{ptr::with_exposed_provenance, thread::JoinHandle};
 use anyhow::Error;
 use crossbeam::channel::Sender;
 
-pub enum PileupWorkerState {
-    Off,
-    Running(JoinHandle<()>),
-}
-
 pub struct PileupWorker {
     interval: GenomeInterval,
     id: usize,
-    state: PileupWorkerState,
     params: PileupParams,
     src: BamDataSource,
 }
@@ -45,17 +39,16 @@ impl std::io::Write for DummyOutputWriter {
 }
 
 impl PileupWorker {
-    pub fn new(p: PileupParams, interval: GenomeInterval, id: usize, src: BamDataSource) -> Self {
+    pub fn new(params: PileupParams, interval: GenomeInterval, id: usize, src: BamDataSource) -> Self {
         Self {
-            interval: interval.clone(),
+            interval,
             id,
-            params: p.clone(),
-            state: PileupWorkerState::Off,
-            src: src.clone(),
+            params,
+            src,
         }
     }
 
-    pub fn run<T>(&mut self, o: T, queue_handle: Sender<T>) -> Vec<T>
+    pub fn run<T>(&mut self, o: T) -> Vec<T>
     where
         T: OrderedPileupOutput + 'static,
     {
@@ -63,7 +56,7 @@ impl PileupWorker {
             &self.src,
             &self.params,
             o,
-            OutputMethod::<DummyOutputWriter, T>::QueueForOutput(queue_handle, Vec::with_capacity(10_000)),
+            OutputMethod::<DummyOutputWriter, T>::QueueForOutput(Vec::with_capacity(10_000)),
         )
         .unwrap();
 
@@ -72,13 +65,6 @@ impl PileupWorker {
                 queue: vec![self.interval.clone()],
             })
             .unwrap()
-    }
-
-    pub fn wait(self) -> Result<(), Error> {
-        match self.state {
-            PileupWorkerState::Off => anyhow::bail!("Attempted to join a deactivated worker!"),
-            PileupWorkerState::Running(j) => Ok(j.join().unwrap()),
-        }
     }
 }
 
@@ -133,7 +119,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             self.output,
             OutputMethod::WriteDirectly(lock),
         )?;
-        iterator._auto_loop(&self.intervals)
+        iterator._auto_loop_output_each(&self.intervals)
     }
 
     pub fn run_multi(self) -> Result<(), Error> {
@@ -158,12 +144,13 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                     .enumerate()
                     .flat_map(|(i, chunk)| {
                         let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), i, src.clone());
-                        worker.run(self.output.clone(), output_handle.clone())
+                        worker.run(self.output.clone())
                     })
                     .for_each(|o| {
                         output_handle.send(o).unwrap();
                     });
             });
+
             drop(output_handle);
             agg.terminate()?;
         }

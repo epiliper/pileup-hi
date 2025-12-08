@@ -13,8 +13,6 @@ const R_MATCH: u8 = b',';
 const F_REFSKIP: u8 = b'>';
 const R_REFSKIP: u8 = b'<';
 
-const OUTPUT_BUF_SIZE_BYTES: usize = 1024 * 1024;
-
 #[derive(Clone)]
 pub struct PileupString {
     seqbuf: Vec<u8>,

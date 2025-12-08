@@ -1,8 +1,9 @@
 #![allow(dead_code)]
-use crate::{alignment::PileupAlignment, threading::PileupWorkerState};
+use crate::alignment::PileupAlignment;
 use anyhow::Error;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::io::BufWriter;
+use std::thread::JoinHandle;
 
 const PILEUP_OUTPUT_BUF_PURGE_THRES: usize = 1_000_000;
 
@@ -26,50 +27,39 @@ pub trait OrderedPileupOutput: Send + Sync + Clone {
 /// have to care about queue-ing output.
 pub enum OutputMethod<W: std::io::Write, T: OrderedPileupOutput> {
     WriteDirectly(W),
-    QueueForOutput(Sender<T>, Vec<T>),
+    QueueForOutput(Vec<T>),
 }
 
 ////////////////
 // Begin defs for PileupOutputAggregator
 ////////////////
 
-pub enum PileupOutputState<T: OrderedPileupOutput> {
-    Closed,
-    Open(Sender<T>),
-}
-
 pub struct PileupOutputAggregator<T>
 where
     T: OrderedPileupOutput,
 {
-    pub input_state: PileupOutputState<T>,
-    pub worker_state: PileupWorkerState,
+    pub input_handle: Option<Sender<T>>,
+    pub join_handle: Option<JoinHandle<()>>,
 }
 
 impl<T: OrderedPileupOutput + 'static> PileupOutputAggregator<T> {
     pub fn new() -> Self {
         Self {
-            input_state: PileupOutputState::Closed,
-            worker_state: PileupWorkerState::Off,
+            input_handle: None,
+            join_handle: None,
         }
     }
 
     pub fn get_output_handle(&self) -> Option<Sender<T>> {
-        match &self.input_state {
-            PileupOutputState::Closed => None,
-            PileupOutputState::Open(s) => Some(s.clone()),
-        }
+        self.input_handle.clone()
     }
 
     pub fn terminate(self) -> Result<(), Error> {
-        match (self.input_state, self.worker_state) {
-            (PileupOutputState::Closed, _) | (_, PileupWorkerState::Off) => {
-                anyhow::bail!("Cannot terminate an output channel that never started!")
-            }
-
-            (PileupOutputState::Open(s), PileupWorkerState::Running(j)) => {
-                drop(s);
-                j.join().unwrap();
+        match (self.input_handle, self.join_handle) {
+            (None, _) | (_, None) => anyhow::bail!("attempted to terminate an unitialized aggregator."),
+            (Some(snd), Some(join_handle)) => {
+                drop(snd);
+                join_handle.join().expect("failed to join output aggregator");
                 Ok(())
             }
         }
@@ -82,7 +72,7 @@ impl<T: OrderedPileupOutput + 'static> PileupOutputAggregator<T> {
             r.into_iter().for_each(|mut o| o.write(&mut writer).unwrap());
         });
 
-        self.worker_state = PileupWorkerState::Running(j);
-        self.input_state = PileupOutputState::Open(s.clone());
+        self.join_handle = Some(j);
+        self.input_handle = Some(s);
     }
 }
