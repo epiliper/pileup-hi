@@ -132,8 +132,8 @@ impl PileupString {
             ref_base: 0,
             depth: 0,
             ref_name: "".to_string(),
-            qualbuf: Vec::with_capacity(500),
-            seqbuf: Vec::with_capacity(500),
+            qualbuf: Vec::new(),
+            seqbuf: Vec::new(),
         }
     }
 }
