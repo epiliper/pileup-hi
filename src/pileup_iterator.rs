@@ -285,7 +285,7 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
             }
 
             if r.tid() != self.tid {
-                panic!();
+                panic!("{}", r.tid());
             }
 
             if r.pos() > self.max_pos {

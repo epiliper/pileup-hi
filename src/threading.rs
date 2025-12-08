@@ -1,28 +1,17 @@
-#![allow(dead_code, unused_imports)]
 use crate::{
     bamio::{BamDataSource, BamReader},
-    basedepth_string::BaseDepthString,
     output::{OrderedPileupOutput, OutputMethod, PileupOutputAggregator},
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
-    pileup_string::PileupString,
     position_queue::{create_region_queue, GenomeInterval, PositionQueue},
 };
 
-use rayon::prelude::*;
-use rust_htslib::bam::pileup::Pileup;
-
-const DEFAULT_READ_LEN: usize = 150;
-
-use std::{collections::VecDeque, io::BufWriter};
-use std::{ptr::with_exposed_provenance, thread::JoinHandle};
-
 use anyhow::Error;
-use crossbeam::channel::Sender;
+use rayon::prelude::*;
+use std::{collections::VecDeque, io::BufWriter};
 
 pub struct PileupWorker {
     interval: GenomeInterval,
-    id: usize,
     params: PileupParams,
     src: BamDataSource,
 }
@@ -39,13 +28,8 @@ impl std::io::Write for DummyOutputWriter {
 }
 
 impl PileupWorker {
-    pub fn new(params: PileupParams, interval: GenomeInterval, id: usize, src: BamDataSource) -> Self {
-        Self {
-            interval,
-            id,
-            params,
-            src,
-        }
+    pub fn new(params: PileupParams, interval: GenomeInterval, src: BamDataSource) -> Self {
+        Self { interval, params, src }
     }
 
     pub fn run<T>(&mut self, o: T) -> Vec<T>
@@ -70,10 +54,7 @@ impl PileupWorker {
 
 pub struct PileupEngine<T: OrderedPileupOutput> {
     intervals: PositionQueue,
-    read_size: usize,
-    in_params: InputParams,
     plp_params: PileupParams,
-    workers: Vec<PileupWorker>,
     src: BamDataSource,
     output: T,
 }
@@ -81,7 +62,6 @@ pub struct PileupEngine<T: OrderedPileupOutput> {
 impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     pub fn initialize(in_params: InputParams, plp_params: PileupParams, output: T) -> Result<Self, Error> {
         let src = BamDataSource::from_string(&in_params.file)?;
-        let read_size = BamReader::sample_read_length(&src).unwrap_or(DEFAULT_READ_LEN);
 
         let tempreader = BamReader::new(&src, 1)?;
         let header = &tempreader.header;
@@ -94,9 +74,6 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
         Ok(Self {
             intervals,
-            workers: Vec::with_capacity(plp_params.threads),
-            read_size,
-            in_params,
             plp_params,
             src,
             output,
@@ -104,7 +81,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     }
 
     pub fn run(self) -> Result<(), Error> {
-        if self.intervals.len() == 1 || self.plp_params.threads == 1 {
+        if self.intervals.len() == 1 || self.plp_params.threads == 1 || !self.src.has_index()? {
             self.run_single()
         } else {
             self.run_multi()
@@ -112,7 +89,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     }
 
     pub fn run_single(self) -> Result<(), Error> {
-        let lock = std::io::stdout().lock();
+        let lock = BufWriter::new(std::io::stdout().lock());
         let mut iterator = PileupIterator::new(
             &self.src,
             &self.plp_params,
@@ -141,9 +118,8 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             threadpool.install(|| {
                 subintervals
                     .par_iter()
-                    .enumerate()
-                    .flat_map(|(i, chunk)| {
-                        let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), i, src.clone());
+                    .flat_map(|chunk| {
+                        let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
                         worker.run(self.output.clone())
                     })
                     .for_each(|o| {
