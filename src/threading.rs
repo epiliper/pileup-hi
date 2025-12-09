@@ -107,33 +107,38 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         iterator._auto_loop_output_each(&self.intervals)
     }
 
-    /// Use separate threads for processing and writing. Each processing thread owns its own reads into the BAM file, index, and any other files.
+    /// Use separate threads for processing and writing. Each processing thread owns its IO readers for input BAM, index, and any other files.
     pub fn run_multi(self) -> Result<(), Error> {
         for interval in self.intervals.queue {
             let mut agg: PileupOutputAggregator<T> = PileupOutputAggregator::new();
             agg.run();
             let output_handle = agg.get_output_handle().unwrap();
 
-            let subintervals = interval.chunks(1_000_000).collect::<VecDeque<GenomeInterval>>();
+            let subintervals = interval.chunks(1_000_000).collect::<Vec<GenomeInterval>>();
 
             let threadpool = rayon::ThreadPoolBuilder::new()
                 .num_threads(self.threads)
                 .build()
                 .unwrap();
+
             let src = &self.src.clone();
 
-            // thank you Seth Stadick for this this blazingly-fast rayon usage pattern.
-            threadpool.install(|| {
-                subintervals
-                    .par_iter()
-                    .flat_map(|chunk| {
-                        let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
-                        worker.run(self.output.clone())
-                    })
-                    .for_each(|o| {
+            for thread_jobs in subintervals.chunks(self.threads) {
+                // thank you Seth Stadick for this this blazingly-fast rayon usage pattern.
+                threadpool.install(|| {
+                    let results: Vec<_> = thread_jobs
+                        .par_iter()
+                        .flat_map(|chunk| {
+                            let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
+                            worker.run(self.output.clone())
+                        })
+                        .collect();
+
+                    for o in results {
                         output_handle.send(o).unwrap();
-                    });
-            });
+                    }
+                });
+            }
 
             drop(output_handle);
             agg.terminate()?;
