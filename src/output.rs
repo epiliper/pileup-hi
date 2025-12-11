@@ -24,11 +24,53 @@ pub trait OrderedPileupOutput: Send + Sync + Clone {
     fn new() -> Self;
 }
 
+// a pre-allocated array of pileup outputs used to buffer
+// when processing genome intervals (intended for multithreading)
+pub struct PileupOutputArray<T: OrderedPileupOutput> {
+    data: Vec<Option<T>>,
+    cur_entry: usize,
+}
+
+impl<T: OrderedPileupOutput> PileupOutputArray<T> {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            data: vec![Some(T::new()); capacity],
+            cur_entry: 0,
+        }
+    }
+
+    pub fn get_current_mut(&mut self) -> &mut T {
+        self.data[self.cur_entry].as_mut().unwrap()
+    }
+
+    pub fn tombstone(&mut self) {
+        self.data[self.cur_entry] = None;
+        self.cur_entry += 1;
+    }
+
+    pub fn advance(&mut self) {
+        self.cur_entry += 1;
+    }
+
+    pub fn take_data(self) -> Vec<Option<T>> {
+        self.data
+    }
+}
+
+impl<T: OrderedPileupOutput> Default for PileupOutputArray<T> {
+    fn default() -> Self {
+        Self {
+            data: vec![],
+            cur_entry: 0,
+        }
+    }
+}
+
 /// Defines how to get output data from iterators from a thread. If using a single thread, we can just print directly and not waste memory queueing output.
 /// have to care about queue-ing output.
 pub enum OutputMethod<W: std::io::Write, T: OrderedPileupOutput> {
     WriteDirectly(W),
-    QueueForOutput(Vec<T>),
+    QueueForOutput(PileupOutputArray<T>),
 }
 
 ////////////////
@@ -39,7 +81,7 @@ pub struct PileupOutputAggregator<T>
 where
     T: OrderedPileupOutput,
 {
-    pub input_handle: Option<Sender<Vec<T>>>,
+    pub input_handle: Option<Sender<Vec<Option<T>>>>,
     pub join_handle: Option<JoinHandle<()>>,
 }
 
@@ -51,7 +93,7 @@ impl<T: OrderedPileupOutput + 'static> PileupOutputAggregator<T> {
         }
     }
 
-    pub fn get_output_handle(&self) -> Option<Sender<Vec<T>>> {
+    pub fn get_output_handle(&self) -> Option<Sender<Vec<Option<T>>>> {
         self.input_handle.clone()
     }
 
@@ -67,12 +109,16 @@ impl<T: OrderedPileupOutput + 'static> PileupOutputAggregator<T> {
     }
 
     pub fn run(&mut self) {
-        let (s, r): (Sender<Vec<T>>, Receiver<Vec<T>>) = bounded(10_000_000);
+        let (s, r): (Sender<Vec<Option<T>>>, Receiver<Vec<Option<T>>>) = bounded(10000);
+
         let j = std::thread::spawn(move || {
             let mut writer = BufWriter::with_capacity(1024 * 1024 * 2, std::io::stdout().lock());
 
-            r.into_iter()
-                .for_each(|o| o.into_iter().for_each(|mut item| item.write(&mut writer).unwrap()));
+            r.into_iter().for_each(|o| {
+                o.into_iter()
+                    .flatten()
+                    .for_each(|mut item| item.write(&mut writer).unwrap())
+            });
 
             writer.flush().unwrap();
         });

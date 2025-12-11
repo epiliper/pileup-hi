@@ -175,7 +175,7 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
     // gather all output T for a given region into a vec; ideally for delivery to a writer
     // not compatible with OutputMethod::WriteDirectly, since we reuse the same output memory
     // without copying.
-    pub fn _auto_loop_yield_batch(mut self, queue: &[GenomeInterval]) -> Result<Vec<T>, Error> {
+    pub fn _auto_loop_yield_batch(mut self, queue: &[GenomeInterval]) -> Result<Vec<Option<T>>, Error> {
         if matches!(self.dest, OutputMethod::WriteDirectly(_)) {
             anyhow::bail!("DEV: incompatible funcs; 'write directly' does not yield Vecs!");
         }
@@ -194,7 +194,7 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
             OutputMethod::WriteDirectly(_) => anyhow::bail!("Cannot output vec of reads when we output them directly"),
             OutputMethod::QueueForOutput(outputs) => {
                 let out = std::mem::take(outputs);
-                Ok(out)
+                Ok(out.take_data())
             }
         }
     }
@@ -232,11 +232,15 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
             }
 
             OutputMethod::QueueForOutput(output_chunk) => {
-                let mut output = T::new();
+                let output = output_chunk.get_current_mut();
+                // let mut output = T::new();
                 output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
-                let generated = generate_pileup(rbuf, ref_sequence, &mut output, self.pos, self.min_baseq)?;
+                let generated = generate_pileup(rbuf, ref_sequence, output, self.pos, self.min_baseq)?;
                 if generated || output.depth() > 0 || self.show_all {
-                    output_chunk.push(output);
+                    output_chunk.advance();
+                    // output_chunk.push(output);
+                } else {
+                    output_chunk.tombstone();
                 }
             }
         }
