@@ -94,7 +94,7 @@ impl GenomeInterval {
     }
 
     pub fn len(&self) -> usize {
-        (self.end - self.start + 1) as usize
+        (self.end - self.start) as usize
     }
 }
 

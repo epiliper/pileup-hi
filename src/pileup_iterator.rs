@@ -175,7 +175,7 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
     // gather all output T for a given region into a vec; ideally for delivery to a writer
     // not compatible with OutputMethod::WriteDirectly, since we reuse the same output memory
     // without copying.
-    pub fn _auto_loop_yield_batch(mut self, queue: &[GenomeInterval]) -> Result<Vec<Option<T>>, Error> {
+    pub fn _auto_loop_yield_batch(mut self, queue: &[GenomeInterval]) -> Result<(), Error> {
         if matches!(self.dest, OutputMethod::WriteDirectly(_)) {
             anyhow::bail!("DEV: incompatible funcs; 'write directly' does not yield Vecs!");
         }
@@ -192,9 +192,9 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
 
         match &mut self.dest {
             OutputMethod::WriteDirectly(_) => anyhow::bail!("Cannot output vec of reads when we output them directly"),
-            OutputMethod::QueueForOutput(outputs) => {
-                let out = std::mem::take(outputs);
-                Ok(out.take_data())
+            OutputMethod::QueueForOutput(out) => {
+                // out.yield_data_chunk();
+                Ok(())
             }
         }
     }

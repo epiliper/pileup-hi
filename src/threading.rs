@@ -6,7 +6,10 @@ use crate::{
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
 };
 
+const OUTPUT_ARRAY_YIELD_SIZE: usize = 2000;
+
 use anyhow::Error;
+use crossbeam::channel::Sender;
 use rayon::prelude::*;
 use std::io::BufWriter;
 
@@ -32,7 +35,7 @@ impl PileupWorker {
         Self { interval, params, src }
     }
 
-    pub fn run<T>(&mut self, o: T) -> Vec<Option<T>>
+    pub fn run<T>(&mut self, o: T, snd: Sender<Vec<Option<T>>>)
     where
         T: OrderedPileupOutput + 'static,
     {
@@ -40,7 +43,9 @@ impl PileupWorker {
             &self.src,
             &self.params,
             o,
-            OutputMethod::<DummyOutputWriter, T>::QueueForOutput(PileupOutputArray::new(self.interval.len())),
+            OutputMethod::<DummyOutputWriter, T>::QueueForOutput(
+                PileupOutputArray::new(self.interval.len(), OUTPUT_ARRAY_YIELD_SIZE, snd).unwrap(),
+            ),
         )
         .unwrap();
 
@@ -128,15 +133,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
             threadpool.install(|| {
                 for thread_jobs in subintervals.chunks(self.threads) {
-                    let results: Vec<_> = thread_jobs
-                        .par_iter()
-                        .flat_map(|chunk| {
-                            let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
-                            worker.run(self.output.clone())
-                        })
-                        .collect();
-
-                    output_handle.send(results).unwrap();
+                    thread_jobs.par_iter().for_each(|chunk| {
+                        let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
+                        worker.run(self.output.clone(), output_handle.clone());
+                    });
                 }
             });
 

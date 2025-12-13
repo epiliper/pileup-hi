@@ -27,42 +27,64 @@ pub trait OrderedPileupOutput: Send + Sync + Clone {
 // a pre-allocated array of pileup outputs used to buffer
 // when processing genome intervals (intended for multithreading)
 pub struct PileupOutputArray<T: OrderedPileupOutput> {
-    data: Vec<Option<T>>,
+    data: Vec<Vec<Option<T>>>,
+    cur_chunk: usize,
     cur_entry: usize,
+    chunk_size: usize,
+    output: Sender<Vec<Option<T>>>,
 }
 
 impl<T: OrderedPileupOutput> PileupOutputArray<T> {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            data: vec![Some(T::new()); capacity],
-            cur_entry: 0,
+    pub fn new(capacity: usize, chunks: usize, output: Sender<Vec<Option<T>>>) -> Result<Self, Error> {
+        let chunk_size = capacity / chunks;
+        let remainder = capacity % chunks;
+
+        let mut data = Vec::with_capacity(chunks);
+
+        for _ in 0..chunks - 1 {
+            data.push(vec![Some(T::new()); chunk_size]);
         }
+
+        let final_size = if remainder != 0 {
+            chunk_size + remainder
+        } else {
+            chunk_size
+        };
+
+        data.push(vec![Some(T::new()); final_size]);
+
+        Ok(Self {
+            data,
+            cur_entry: 0,
+            cur_chunk: 0,
+            chunk_size,
+            output,
+        })
     }
 
     pub fn get_current_mut(&mut self) -> &mut T {
-        self.data[self.cur_entry].as_mut().unwrap()
+        self.data[self.cur_chunk][self.cur_entry].as_mut().unwrap()
     }
 
     pub fn tombstone(&mut self) {
-        self.data[self.cur_entry] = None;
-        self.cur_entry += 1;
+        self.data[self.cur_chunk][self.cur_entry] = None;
+        self.advance();
     }
 
     pub fn advance(&mut self) {
         self.cur_entry += 1;
-    }
 
-    pub fn take_data(self) -> Vec<Option<T>> {
-        self.data
-    }
-}
-
-impl<T: OrderedPileupOutput> Default for PileupOutputArray<T> {
-    fn default() -> Self {
-        Self {
-            data: vec![],
-            cur_entry: 0,
+        if self.cur_entry >= self.data[self.cur_chunk].len() {
+            self.yield_data_chunk();
         }
+    }
+
+    pub fn yield_data_chunk(&mut self) {
+        let batch = std::mem::take(&mut self.data[self.cur_chunk]);
+        self.output.send(batch).unwrap();
+
+        self.cur_chunk += 1;
+        self.cur_entry = 0;
     }
 }
 
