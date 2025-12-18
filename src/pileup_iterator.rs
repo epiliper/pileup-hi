@@ -99,7 +99,12 @@ pub enum IterResult {
 }
 
 impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
-    pub fn new(src: &BamDataSource, params: &PileupParams, output: T, dest: OutputMethod<W, T>) -> Result<Self, Error> {
+    pub fn new(
+        src: &BamDataSource,
+        params: &PileupParams,
+        output: T,
+        dest: OutputMethod<W, T>,
+    ) -> Result<Self, Error> {
         let reader = BamReader::new(src, 2)?;
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
@@ -155,7 +160,9 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
     // Output each output T without gathering them all first. Ideal for single-threaded mode or when memory is low.
     pub fn _auto_loop_output_each(&mut self, queue: &[GenomeInterval]) -> Result<(), Error> {
         if matches!(self.dest, OutputMethod::QueueForOutput(_)) {
-            anyhow::bail!("DEV: incompatible funcs; 'Output each' is not compatible with output queue")
+            anyhow::bail!(
+                "DEV: incompatible funcs; 'Output each' is not compatible with output queue"
+            )
         }
 
         for reg in queue {
@@ -191,9 +198,12 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
         }
 
         match &mut self.dest {
-            OutputMethod::WriteDirectly(_) => anyhow::bail!("Cannot output vec of reads when we output them directly"),
-            OutputMethod::QueueForOutput(_) => {
+            OutputMethod::WriteDirectly(_) => {
+                anyhow::bail!("Cannot output vec of reads when we output them directly")
+            }
+            OutputMethod::QueueForOutput(out) => {
                 // out.yield_data_chunk();
+                out.flush();
                 Ok(())
             }
         }
@@ -222,7 +232,8 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
             OutputMethod::WriteDirectly(ref mut writer) => {
                 let mut output = self.output.take().unwrap();
                 output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
-                let generated = generate_pileup(rbuf, ref_sequence, &mut output, self.pos, self.min_baseq)?;
+                let generated =
+                    generate_pileup(rbuf, ref_sequence, &mut output, self.pos, self.min_baseq)?;
                 if generated || output.depth() > 0 || self.show_all {
                     output.write(writer)?;
                 } else {
@@ -235,7 +246,8 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
                 let output = output_chunk.get_current_mut();
                 // let mut output = T::new();
                 output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
-                let generated = generate_pileup(rbuf, ref_sequence, output, self.pos, self.min_baseq)?;
+                let generated =
+                    generate_pileup(rbuf, ref_sequence, output, self.pos, self.min_baseq)?;
                 if generated || output.depth() > 0 || self.show_all {
                     output_chunk.advance();
                     // output_chunk.push(output);
@@ -256,7 +268,8 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
             self.tid += 1;
         }
 
-        self.reader.init_to_ref(self.tid as u32, self.pos, self.max_pos)?;
+        self.reader
+            .init_to_ref(self.tid as u32, self.pos, self.max_pos)?;
 
         if let Some(refseq) = &mut self.refseq {
             refseq.load_seq(&self.reader.cur_ref)?;

@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
 use std::ops::AddAssign;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BaseDepthString {
     tid: i32,
     pos: i64,
@@ -172,7 +172,11 @@ impl BaseDepthString {
     }
 
     #[inline(always)]
-    pub fn register_pileup(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error> {
+    pub fn register_pileup(
+        &mut self,
+        p: &PileupAlignment,
+        refseq: Option<&[u8]>,
+    ) -> Result<(), Error> {
         match p.del {
             false => {
                 let readbase = p.rec.seq()[p.qpos];
@@ -224,7 +228,11 @@ impl BaseDepthString {
 }
 
 #[inline(always)]
-pub fn expand_insertions(p: &PileupAlignment, seq_buf: &mut Vec<u8>, ndel: &mut i32) -> Result<(), Error> {
+pub fn expand_insertions(
+    p: &PileupAlignment,
+    seq_buf: &mut Vec<u8>,
+    ndel: &mut i32,
+) -> Result<(), Error> {
     let mut read_pos: usize;
     let mut read_base: u8;
     let ncig = p.cstate.cig.len();

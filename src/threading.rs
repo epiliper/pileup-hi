@@ -1,20 +1,20 @@
 use crate::{
     bamio::{BamDataSource, BamReader},
     output::{
-        OrderedPileupOutput, OutputMethod, PileupOutputAggregator, PileupOutputArray,
-        PileupOutputChunk,
+        merge_temp_outputs, OrderedPileupOutput, OutputMethod, PileupOutputArray, TempOutputHandle,
     },
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
+    utils::temp_fname,
 };
 
 const OUTPUT_ARRAY_YIELD_SIZE: usize = 2000;
+const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
 
 use anyhow::Error;
-use crossbeam::channel::Sender;
-use rayon::prelude::*;
-use std::io::BufWriter;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use std::io::{stdout, BufWriter};
 
 pub struct PileupWorker {
     interval: GenomeInterval,
@@ -42,7 +42,7 @@ impl PileupWorker {
         }
     }
 
-    pub fn run<T>(&mut self, o: T, snd: Sender<PileupOutputChunk>, id: u8)
+    pub fn run<T>(&mut self, o: T, out: TempOutputHandle, id: usize)
     where
         T: OrderedPileupOutput + 'static,
     {
@@ -51,8 +51,13 @@ impl PileupWorker {
             &self.params,
             o,
             OutputMethod::<DummyOutputWriter, T>::QueueForOutput(
-                PileupOutputArray::new(self.interval.len(), OUTPUT_ARRAY_YIELD_SIZE, snd, id)
-                    .unwrap(),
+                PileupOutputArray::new(
+                    1_000_000,
+                    std::cmp::min(self.interval.len(), OUTPUT_ARRAY_YIELD_SIZE),
+                    id,
+                    out,
+                )
+                .unwrap(),
             ),
         )
         .unwrap();
@@ -86,7 +91,6 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         let intervals = if let Some(region) = &in_params.region {
             create_region_queue(region, header)?
         } else {
-            // PositionQueue::new(header)?
             intervals_from_header(header)?
         };
 
@@ -100,7 +104,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     }
 
     pub fn run(self) -> Result<(), Error> {
-        if self.intervals.len() == 1 || self.threads == 1 || !self.src.has_index()? {
+        if self.threads == 1 || !self.src.has_index()? {
             self.run_single()
         } else {
             self.run_multi()
@@ -125,12 +129,18 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
     /// Use separate threads for processing and writing. Each processing thread owns its IO readers for input BAM, index, and any other files.
     pub fn run_multi(self) -> Result<(), Error> {
-        for interval in self.intervals {
-            let mut agg: PileupOutputAggregator = PileupOutputAggregator::new();
-            agg.run(self.src.fname().unwrap(), self.threads);
-            let output_handle = agg.get_output_handle().unwrap();
+        let outprefix = self.src.fname()?;
 
-            let subintervals = interval.chunks(1_000_000).collect::<Vec<GenomeInterval>>();
+        for interval in &self.intervals {
+            let mut merge_map = Vec::with_capacity(self.threads);
+            merge_map.push("STDOUT".to_string());
+            for i in 1..self.threads {
+                merge_map.push(temp_fname(&outprefix, &i.to_string(), "temp.txt"))
+            }
+
+            let per_thread_intervals = interval
+                .n_chunks(self.threads as i64)
+                .collect::<Vec<GenomeInterval>>();
 
             let threadpool = rayon::ThreadPoolBuilder::new()
                 .num_threads(self.threads)
@@ -139,18 +149,25 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
             let src = &self.src.clone();
 
-            // Process ALL subintervals in parallel at once
             threadpool.install(|| {
-                subintervals.par_iter().for_each(|chunk| {
-                    let thread_id = rayon::current_thread_index().unwrap() as u8;
-                    let mut worker =
-                        PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
-                    worker.run(self.output.clone(), output_handle.clone(), thread_id);
-                });
+                per_thread_intervals
+                    .par_iter()
+                    .enumerate()
+                    .for_each(|(i, chunk)| {
+                        let mut worker =
+                            PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
+                        worker.run(
+                            self.output.clone(),
+                            TempOutputHandle::new(&merge_map[i], BUFWRITER_CAP).unwrap(),
+                            i,
+                        );
+                    });
             });
 
-            drop(output_handle);
-            agg.terminate()?;
+            merge_temp_outputs(
+                &merge_map,
+                BufWriter::with_capacity(BUFWRITER_CAP, stdout().lock()),
+            )?;
         }
 
         Ok(())

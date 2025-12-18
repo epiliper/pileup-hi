@@ -13,7 +13,7 @@ const R_MATCH: u8 = b',';
 const F_REFSKIP: u8 = b'>';
 const R_REFSKIP: u8 = b'<';
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PileupString {
     seqbuf: Vec<u8>,
     qualbuf: Vec<u8>,
@@ -233,7 +233,7 @@ pub fn write_plp(
             refbase = if let Some(refseq) = refseq.as_ref() {
                 refseq[pos as usize]
             } else {
-                b'N'
+                b'('
             };
             let readbase = p.rec.seq()[p.qpos];
 

@@ -1,17 +1,14 @@
 #![allow(dead_code)]
 use crate::alignment::PileupAlignment;
-use crate::utils::temp_fname;
 use anyhow::Error;
-use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use std::fs::File;
-use std::io::{stdout, BufRead, BufReader, BufWriter, Read, Write};
-use std::thread::JoinHandle;
+use std::io::{stdout, BufReader, BufWriter, Write};
 
 const PILEUP_OUTPUT_BUF_PURGE_THRES: usize = 1_000_000;
 
 /// The interface requirements for a pileup output. It needs to give ref information,
 /// intake pileup alignments, update current ref info, display depth, and write itself.
-pub trait OrderedPileupOutput: Send + Sync + Clone {
+pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     /// Get the reference of the pileup
     fn tid(&self) -> i32;
     /// Get the coordinate of the pileup
@@ -34,22 +31,26 @@ pub struct PileupOutputChunk {
 
 pub struct TempOutputHandle {
     fname: String,
-    writer: BufWriter<File>,
+    writer: BufWriter<Box<dyn Write>>,
 }
 
 impl TempOutputHandle {
-    pub fn new(prefix: &str, id: &str, writer_cap: usize) -> Result<Self, Error> {
-        let fname = temp_fname(prefix, id, "temp");
-        let file = File::create(&fname)?;
+    pub fn new(fname: &str, writer_cap: usize) -> Result<Self, Error> {
+        let dest: Box<dyn Write> = if fname == "STDOUT" {
+            Box::new(stdout().lock())
+        } else {
+            Box::new(File::create(fname)?)
+        };
 
         Ok(Self {
-            fname,
-            writer: BufWriter::with_capacity(writer_cap, file),
+            fname: fname.to_string(),
+            writer: BufWriter::with_capacity(writer_cap, dest),
         })
     }
 
     pub fn write(&mut self, data: &[u8]) {
-        self.writer.write_all(data);
+        let _ = self.writer.write_all(data);
+        self.writer.flush().unwrap();
     }
 
     pub fn delete(&mut self) -> Result<(), Error> {
@@ -57,75 +58,74 @@ impl TempOutputHandle {
     }
 }
 
-fn merge_temp_outputs<W: std::io::Write>(
-    outputs: &mut [TempOutputHandle],
-    mut dest: W,
-) -> Result<(), Error> {
-    for temp in outputs {
-        let mut buffer = [0u8; 8192];
-        let mut reader = BufReader::with_capacity(2 * 1024 * 1024, File::open(&temp.fname)?);
-        loop {
-            let bytes_read = reader.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-
-            dest.write_all(&buffer)?;
+pub fn merge_temp_outputs<W: std::io::Write>(outputs: &[String], mut dest: W) -> Result<(), Error> {
+    for fname in outputs {
+        if fname == "STDOUT" {
+            continue;
         }
-
-        temp.delete();
+        let fhandle = File::open(fname)?;
+        let mut reader = BufReader::with_capacity(2 * 1024 * 1024, fhandle);
+        std::io::copy(&mut reader, &mut dest)?;
+        std::fs::remove_file(fname)?;
     }
-
     dest.flush()?;
-
     Ok(())
 }
 
-/// a pre-allocated array of pileup outputs used to buffer when processing genome intervals (intended for multithreading)
+/// A chunked dynamic array used for batching data writes and reducing allocations, intended for
+/// multithreading where a worker thread also owns its writer. Chunks span a range of coordinates,
+/// each of which should be assigned its output or None if the coordinate failed to meet an output
+/// criterion (e.g. depth).
 pub struct PileupOutputArray<T: OrderedPileupOutput> {
     data: Vec<Vec<Option<T>>>,
+    capacity: usize,
+    pub cur_entry: usize,
     cur_chunk: usize,
-    cur_entry: usize,
-    chunk_size: usize,
-    output: Sender<PileupOutputChunk>,
-    id: u8,
+    write_batch_size: usize,
+    output: TempOutputHandle,
+    pub id: usize,
     outbuf: Vec<u8>,
 }
 
 impl<T: OrderedPileupOutput> PileupOutputArray<T> {
-    pub fn new(
-        capacity: usize,
-        chunks: usize,
-        output: Sender<PileupOutputChunk>,
-        id: u8,
-    ) -> Result<Self, Error> {
-        let chunk_size = capacity / chunks;
-        let remainder = capacity % chunks;
+    pub fn alloc_chunk(&mut self) {
+        let n_chunks = self.capacity / self.write_batch_size;
+        let remainder = self.capacity % self.write_batch_size;
 
-        let mut data = Vec::with_capacity(chunks);
+        self.data = Vec::with_capacity(n_chunks);
 
-        for _ in 0..chunks - 1 {
-            data.push(vec![Some(T::new()); chunk_size]);
+        for _ in 0..n_chunks - 1 {
+            self.data.push(vec![Some(T::new()); self.write_batch_size]);
         }
 
-        let final_size = if remainder != 0 {
-            chunk_size + remainder
-        } else {
-            chunk_size
-        };
+        let final_size = remainder + self.write_batch_size;
 
-        data.push(vec![Some(T::new()); final_size]);
-        let outbuf = Vec::with_capacity(chunk_size * size_of::<T>());
+        self.data.push(vec![Some(T::new()); final_size]);
 
-        Ok(Self {
-            data,
+        self.cur_entry = 0;
+        self.cur_chunk = 0;
+    }
+
+    pub fn new(
+        capacity: usize,
+        write_batch_size: usize,
+        id: usize,
+        output: TempOutputHandle,
+    ) -> Result<Self, Error> {
+        let outbuf = Vec::with_capacity(write_batch_size * size_of::<T>());
+        let mut s = Self {
+            data: Vec::new(),
+            capacity,
             cur_entry: 0,
             cur_chunk: 0,
-            chunk_size,
             output,
+            write_batch_size,
             outbuf,
             id,
-        })
+        };
+
+        s.alloc_chunk();
+        Ok(s)
     }
 
     pub fn get_current_mut(&mut self) -> &mut T {
@@ -140,12 +140,14 @@ impl<T: OrderedPileupOutput> PileupOutputArray<T> {
     pub fn advance(&mut self) {
         self.cur_entry += 1;
 
+        // have enough items to write a batch.
         if self.cur_entry >= self.data[self.cur_chunk].len() {
-            self.yield_data_chunk(
-                // (self.chunk_size * self.cur_chunk.saturating_sub(1)) as u32
-                //     + self.cur_entry as u32
-                //     + self.pos_start as u32,
-            );
+            self.yield_data_chunk();
+        }
+
+        // we wrote the last batch of the chunk, so make a new one.
+        if self.cur_chunk >= self.data.len() {
+            self.alloc_chunk();
         }
     }
 
@@ -153,20 +155,31 @@ impl<T: OrderedPileupOutput> PileupOutputArray<T> {
         let batch = std::mem::take(&mut self.data[self.cur_chunk]);
 
         for mut item in batch.into_iter().flatten() {
-            item.write(&mut self.outbuf);
+            let _ = item.write(&mut self.outbuf);
         }
 
-        let out = std::mem::replace(
-            &mut self.outbuf,
-            Vec::with_capacity(self.chunk_size * size_of::<T>()),
-        );
+        self.output.write(&self.outbuf);
+        self.outbuf.clear();
 
-        self.output
-            .send(PileupOutputChunk {
-                data: out,
-                id: self.id as usize,
-            })
-            .unwrap();
+        self.cur_chunk += 1;
+        self.cur_entry = 0;
+    }
+
+    pub fn flush(&mut self) {
+        let batch = std::mem::take(&mut self.data[self.cur_chunk]);
+
+        for (i, entry) in batch.into_iter().enumerate() {
+            if i >= self.cur_entry {
+                break;
+            }
+
+            if let Some(mut dat) = entry {
+                let _ = dat.write(&mut self.outbuf);
+            }
+        }
+
+        self.output.write(&self.outbuf);
+        self.outbuf.clear();
 
         self.cur_chunk += 1;
         self.cur_entry = 0;
@@ -178,81 +191,4 @@ impl<T: OrderedPileupOutput> PileupOutputArray<T> {
 pub enum OutputMethod<W: std::io::Write, T: OrderedPileupOutput> {
     WriteDirectly(W),
     QueueForOutput(PileupOutputArray<T>),
-}
-
-////////////////
-// Begin defs for PileupOutputAggregator
-////////////////
-
-pub struct PileupOutputAggregator {
-    pub input_handle: Option<Sender<PileupOutputChunk>>,
-    pub join_handle: Option<JoinHandle<()>>,
-}
-
-impl PileupOutputAggregator {
-    pub fn new() -> Self {
-        Self {
-            input_handle: None,
-            join_handle: None,
-        }
-    }
-
-    pub fn get_output_handle(&self) -> Option<Sender<PileupOutputChunk>> {
-        self.input_handle.clone()
-    }
-
-    pub fn terminate(self) -> Result<(), Error> {
-        match (self.input_handle, self.join_handle) {
-            (None, _) | (_, None) => {
-                anyhow::bail!("attempted to terminate an unitialized aggregator.")
-            }
-            (Some(snd), Some(join_handle)) => {
-                drop(snd);
-                join_handle
-                    .join()
-                    .expect("failed to join output aggregator");
-                Ok(())
-            }
-        }
-    }
-
-    pub fn run(&mut self, outprefix: String, threads: usize) {
-        let (s, r): (Sender<PileupOutputChunk>, Receiver<PileupOutputChunk>) = bounded(10000);
-
-        let j = std::thread::spawn(move || {
-            let mut writers = Vec::with_capacity(threads - 1);
-
-            for i in 0..threads - 1 {
-                let temp =
-                    TempOutputHandle::new(&outprefix, &i.to_string(), 2 * 1024 * 1024).unwrap();
-                writers.push(temp);
-            }
-
-            let mut main_writer = BufWriter::with_capacity(2 * 1024 * 1024, stdout().lock());
-
-            r.into_iter().for_each(|o| {
-                if o.id == 0 {
-                    main_writer.write_all(&o.data);
-                    // o.data
-                    //     .into_iter()
-                    //     .flatten()
-                    //     .for_each(|mut pos| pos.write(&mut main_writer).unwrap());
-                } else {
-                    let tempout = &mut writers[o.id - 1];
-                    tempout.write(&o.data);
-                    // o.data
-                    //     .into_iter()
-                    //     .flatten()
-                    //     .for_each(|pos| tempout.write(pos));
-                }
-            });
-
-            main_writer.flush().unwrap();
-
-            merge_temp_outputs(&mut writers, main_writer).unwrap();
-        });
-
-        self.join_handle = Some(j);
-        self.input_handle = Some(s);
-    }
 }
