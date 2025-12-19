@@ -217,10 +217,3 @@ pub fn intervals_from_regions(
 
     Ok(queue)
 }
-
-// #[allow(dead_code)]
-// pub fn positino_queue_from_bam(path: &str) -> Result<Self, Error> {
-//     let reader = Reader::from_path(path)?;
-//     let header = reader.header();
-//     Self::new(header)
-// }

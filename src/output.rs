@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::alignment::PileupAlignment;
 use anyhow::Error;
 use log::warn;
@@ -6,16 +5,16 @@ use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Write};
 use std::sync::Mutex;
 
-const PILEUP_OUTPUT_BUF_PURGE_THRES: usize = 1_000_000;
-
 pub static TEMP_FILES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// The interface requirements for a pileup output. It needs to give ref information,
 /// intake pileup alignments, update current ref info, display depth, and write itself.
 pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     /// Get the reference of the pileup
+    #[allow(dead_code)]
     fn tid(&self) -> i32;
     /// Get the coordinate of the pileup
+    #[allow(dead_code)]
     fn pos(&self) -> i64;
     /// Update internal data with pileup alignment
     fn intake(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error>;
@@ -27,14 +26,7 @@ pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     fn new() -> Self;
 }
 
-#[derive(Clone)]
-pub struct PileupOutputChunk {
-    pub data: Vec<u8>,
-    pub id: usize,
-}
-
 pub struct TempOutputHandle {
-    fname: String,
     writer: BufWriter<Box<dyn Write>>,
 }
 
@@ -47,7 +39,6 @@ impl TempOutputHandle {
         };
 
         Ok(Self {
-            fname: fname.to_string(),
             writer: BufWriter::with_capacity(writer_cap, dest),
         })
     }
@@ -55,10 +46,6 @@ impl TempOutputHandle {
     pub fn write(&mut self, data: &[u8]) {
         let _ = self.writer.write_all(data);
         self.writer.flush().unwrap();
-    }
-
-    pub fn delete(&mut self) -> Result<(), Error> {
-        std::fs::remove_file(std::path::Path::new(&self.fname)).map_err(Error::msg)
     }
 }
 
@@ -96,7 +83,9 @@ pub fn setup_exit_handler() {
 /// A chunked dynamic array used for batching data writes and reducing allocations, intended for
 /// multithreading where a worker thread also owns its writer. Chunks span a range of coordinates,
 /// each of which should be assigned its output or None if the coordinate failed to meet an output
-/// criterion (e.g. depth).
+/// criterion (e.g. depth). Each chunk contains a sub-chunk of size write_batch_size. Once this
+/// chunk is filled, it is written to the output. Once all sub-chunks of a chunk have been written,
+/// a new chunk is allocated.
 pub struct PileupOutputArray<T: OrderedPileupOutput> {
     data: Vec<Vec<Option<T>>>,
     capacity: usize,
@@ -104,7 +93,8 @@ pub struct PileupOutputArray<T: OrderedPileupOutput> {
     cur_chunk: usize,
     write_batch_size: usize,
     output: TempOutputHandle,
-    pub id: usize,
+    #[allow(dead_code)]
+    pub id: usize, // keeping this field in case we want to identify logs by thread
     outbuf: Vec<u8>,
 }
 
