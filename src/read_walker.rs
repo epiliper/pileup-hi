@@ -84,12 +84,7 @@ impl IterCigarMatches {
 #[test]
 fn test_walk1() {
     let mut r = Record::new();
-    r.set(
-        b"r1",
-        Some(&CigarString(vec![Cigar::Match(5)])),
-        b"GATGA",
-        b"#####",
-    );
+    r.set(b"r1", Some(&CigarString(vec![Cigar::Match(5)])), b"GATGA", b"#####");
 
     r.set_pos(0);
 
@@ -102,11 +97,7 @@ fn test_walk2() {
     let mut r = Record::new();
     r.set(
         b"r2",
-        Some(&CigarString(vec![
-            Cigar::Match(4),
-            Cigar::Del(1),
-            Cigar::Match(1),
-        ])),
+        Some(&CigarString(vec![Cigar::Match(4), Cigar::Del(1), Cigar::Match(1)])),
         b"GATGA",
         b"#####",
     );
@@ -123,10 +114,7 @@ fn test_walk2() {
 
     assert_eq!(ret, vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 5)]);
 
-    assert!(matches!(
-        walker.cigar[walker.cigar_index - 2],
-        Cigar::Del(1)
-    ));
+    assert!(matches!(walker.cigar[walker.cigar_index - 2], Cigar::Del(1)));
 
     println! {"{}", walker.cigar[walker.cigar_index - 2]}
     assert!(walker.after_del());
@@ -166,10 +154,7 @@ fn test_walk3() {
 
     assert_eq!(ret, vec![(1, 0), (2, 1), (3, 2), (4, 3), (5, 7), (6, 8)]);
 
-    assert!(matches!(
-        walker.cigar[walker.cigar_index - 2],
-        Cigar::Del(3)
-    ));
+    assert!(matches!(walker.cigar[walker.cigar_index - 2], Cigar::Del(3)));
 
     assert!(walker.after_del());
 

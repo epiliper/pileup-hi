@@ -34,7 +34,9 @@ impl FastaReader for fasta::Reader<BufReader<File>> {
                 anyhow::bail!("Unable to find sequence {} in file", refname);
             }
 
-            RefSeqStore::Seq(_) => anyhow::bail!("Cannot read from non-indexed reader into plain byte slice!"),
+            RefSeqStore::Seq(_) => {
+                anyhow::bail!("Cannot read from non-indexed reader into plain byte slice!")
+            }
         }
     }
 }
@@ -42,7 +44,9 @@ impl FastaReader for fasta::Reader<BufReader<File>> {
 impl FastaReader for fasta::IndexedReader<File> {
     fn read_to_bytes(&mut self, refname: &str, seqbuf: &mut RefSeqStore) -> Result<i64, Error> {
         match seqbuf {
-            RefSeqStore::Record(_) => anyhow::bail!("Cannot read from indexed reader into Record struct"),
+            RefSeqStore::Record(_) => {
+                anyhow::bail!("Cannot read from indexed reader into Record struct")
+            }
             RefSeqStore::Seq(seq) => {
                 self.fetch_all(refname)?;
                 self.read(seq)

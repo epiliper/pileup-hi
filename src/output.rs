@@ -127,12 +127,7 @@ impl<T: OrderedPileupOutput> PileupOutputArray<T> {
         self.cur_chunk = 0;
     }
 
-    pub fn new(
-        capacity: usize,
-        write_batch_size: usize,
-        id: usize,
-        output: TempOutputHandle,
-    ) -> Result<Self, Error> {
+    pub fn new(capacity: usize, write_batch_size: usize, id: usize, output: TempOutputHandle) -> Result<Self, Error> {
         let outbuf = Vec::with_capacity(write_batch_size * size_of::<T>());
         let mut s = Self {
             data: Vec::new(),

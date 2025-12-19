@@ -1,9 +1,6 @@
 use crate::{
     bamio::{BamDataSource, BamReader},
-    output::{
-        merge_temp_outputs, OrderedPileupOutput, OutputMethod, PileupOutputArray, TempOutputHandle,
-        TEMP_FILES,
-    },
+    output::{merge_temp_outputs, OrderedPileupOutput, OutputMethod, PileupOutputArray, TempOutputHandle, TEMP_FILES},
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
@@ -37,11 +34,7 @@ impl std::io::Write for DummyOutputWriter {
 
 impl PileupWorker {
     pub fn new(params: PileupParams, interval: GenomeInterval, src: BamDataSource) -> Self {
-        Self {
-            interval,
-            params,
-            src,
-        }
+        Self { interval, params, src }
     }
 
     pub fn run<T>(&mut self, o: T, out: TempOutputHandle, id: usize)
@@ -78,11 +71,7 @@ pub struct PileupEngine<T: OrderedPileupOutput> {
 }
 
 impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
-    pub fn initialize(
-        in_params: InputParams,
-        plp_params: PileupParams,
-        output: T,
-    ) -> Result<Self, Error> {
+    pub fn initialize(in_params: InputParams, plp_params: PileupParams, output: T) -> Result<Self, Error> {
         let src = BamDataSource::from_string(&in_params.file)?;
 
         let tempreader = BamReader::new(&src, 1)?;
@@ -106,7 +95,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         if self.plp_params.threads == 1 {
             self.run_single()
         } else if !self.src.has_index()? {
-            warn!("User asked for more than {} threads but file is unindexed. Running in single-thread mode...", self.plp_params.threads);
+            warn!(
+                "User asked for more than {} threads but file is unindexed. Running in single-thread mode...",
+                self.plp_params.threads
+            );
             self.run_single()
         } else {
             info!("Running with {} threads...", self.plp_params.threads);
@@ -164,18 +156,14 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             let src = &self.src.clone();
 
             threadpool.install(|| {
-                per_thread_intervals
-                    .par_iter()
-                    .enumerate()
-                    .for_each(|(i, chunk)| {
-                        let mut worker =
-                            PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
-                        worker.run(
-                            self.output.clone(),
-                            TempOutputHandle::new(&merge_map[i], BUFWRITER_CAP).unwrap(),
-                            i,
-                        );
-                    });
+                per_thread_intervals.par_iter().enumerate().for_each(|(i, chunk)| {
+                    let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
+                    worker.run(
+                        self.output.clone(),
+                        TempOutputHandle::new(&merge_map[i], BUFWRITER_CAP).unwrap(),
+                        i,
+                    );
+                });
             });
 
             info!(
@@ -183,10 +171,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 interval.tid
             );
 
-            merge_temp_outputs(
-                &merge_map,
-                BufWriter::with_capacity(BUFWRITER_CAP, stdout().lock()),
-            )?;
+            merge_temp_outputs(&merge_map, BufWriter::with_capacity(BUFWRITER_CAP, stdout().lock()))?;
         }
 
         Ok(())
