@@ -62,7 +62,6 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
             continue;
         }
 
-        // self.output.intake(&r, ref_sequence)?;
         out.intake(&r, *ref_sequence)?;
 
         drop(r);
@@ -250,7 +249,6 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
     }
 
     pub fn init_to_ref(&mut self, inc: bool) -> Result<IterResult, Error> {
-        // todo: check if this works for bam files without refs in header
         if self.tid == UNINIT_TID {
             self.tid = 0;
         } else if inc {
@@ -283,10 +281,6 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
                 continue;
             }
 
-            if r.pos() < self.pos {
-                continue;
-            }
-
             if !self.read_filter.check_read(r) {
                 continue;
             }
@@ -303,7 +297,7 @@ impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
 
                 // if we hit depth limit, we exhaust all reads at this position to avoid dealing
                 // with them at self.pos + 1.
-                BufPushResult::MaxDepthMet => continue,
+                BufPushResult::MaxDepthMet | BufPushResult::BeforePos => continue,
                 BufPushResult::Pushed => self.next_pos = r.pos(),
             }
 

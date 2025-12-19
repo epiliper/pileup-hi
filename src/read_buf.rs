@@ -18,6 +18,7 @@ pub enum BufPushResult {
     DifferentReference,
     Unmapped,
     MaxDepthMet,
+    BeforePos,
 }
 
 impl ReadBuffer {
@@ -35,6 +36,10 @@ impl ReadBuffer {
 
         if read_len_from_cigar > self.len {
             self.len = read_len_from_cigar;
+        }
+
+        if r.pos() + read_len_from_cigar - 1 < pos {
+            return BufPushResult::BeforePos;
         }
 
         if r.tid() == tid && r.pos() == pos && self.depth >= self.max_depth {

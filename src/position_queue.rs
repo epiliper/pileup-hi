@@ -103,13 +103,27 @@ impl GenomeInterval {
 fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
     // region strings should have one colon and a single dash
     let col_count = s.chars().filter(|c| *c == ':').count();
-    if col_count != 1 {
-        anyhow::bail!("Invalid number of colons ({col_count}) in region string");
+    let dash_count = s.chars().filter(|c| *c == '-').count();
+
+    // appears to be a whole-reference interval, e.g. Chr1 instead of Chr1:2000-4000
+    if col_count == 0 {
+        if dash_count != 0 {
+            anyhow::bail!("Region string invalid: \"{s}\"");
+        } else {
+            return Ok(RawPileupRegion {
+                name: s.to_string(),
+                start: 0,
+                end: i64::MAX,
+            });
+        }
     }
 
-    let dash_count = s.chars().filter(|c| *c == '-').count();
+    if col_count != 1 {
+        anyhow::bail!("Invalid number of colons ({col_count}) in region string \"{s}\"");
+    }
+
     if dash_count != 1 {
-        anyhow::bail!("Invalid number of dashes ({dash_count}) in region string");
+        anyhow::bail!("Invalid number of dashes ({dash_count}) in region string \"{s}\"");
     }
 
     let (ref_name, pos_str) = s.split_once(":").unwrap();
@@ -119,17 +133,20 @@ fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
         .parse::<i64>()
         .with_context(|| format!("Non-numeric start position: {}", start))?;
 
-    // subtract because BAM positions start at zero.
-    start -= 1;
-
     if start < 0 {
         anyhow::bail!("Cannot have a negative start to a region: {}", start);
     }
+
+    // subtract because BAM positions start at zero.
+    start = 0.max(start - 1);
 
     let end = end
         .parse::<i64>()
         .with_context(|| format!("Non-numeric end position: {}", end))?;
 
+    if end < 0 {
+        anyhow::bail!("Cannot have a negative end to a region: {}", end);
+    }
     Ok(RawPileupRegion {
         name: ref_name.to_string(),
         start,
@@ -192,20 +209,12 @@ pub fn intervals_from_regions(
                     .target_len(u32::try_from(tid)?)
                     .context("Unable to get ref len")?;
 
-                if rawreg.end >= i64::try_from(canonlen)? {
-                    anyhow::bail!(
-                        "Supplied region end exceeds length of reference in header: {} vs {}",
-                        rawreg.end,
-                        canonlen
-                    );
-                }
-
                 found = true;
                 queue.push(GenomeInterval {
                     // name: rawreg.name.clone(),
                     tid: i64::try_from(tid)?,
                     start: rawreg.start,
-                    end: rawreg.end,
+                    end: rawreg.end.min(canonlen as i64),
                 })
             }
         }

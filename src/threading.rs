@@ -7,6 +7,8 @@ use crate::{
     utils::temp_fname,
 };
 
+use std::time::Instant;
+
 const OUTPUT_ARRAY_YIELD_SIZE: usize = 2000;
 const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
 
@@ -155,6 +157,8 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
             let src = &self.src.clone();
 
+            let before = Instant::now();
+
             threadpool.install(|| {
                 per_thread_intervals.par_iter().enumerate().for_each(|(i, chunk)| {
                     let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
@@ -166,12 +170,13 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 });
             });
 
-            info!(
-                "Processing for tid {} completed. Deleting intermediate files...",
-                interval.tid
-            );
-
             merge_temp_outputs(&merge_map, BufWriter::with_capacity(BUFWRITER_CAP, stdout().lock()))?;
+
+            info!(
+                "Tid {} completed in {} seconds...",
+                interval.tid,
+                before.elapsed().as_secs()
+            );
         }
 
         Ok(())
