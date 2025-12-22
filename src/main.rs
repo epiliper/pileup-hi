@@ -3,10 +3,10 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use crate::{
     basedepth_string::BaseDepthString,
+    engine::PileupEngine,
     output::setup_exit_handler,
     params::{parse_or_quit, Commands},
     pileup_string::PileupString,
-    threading::PileupEngine,
 };
 
 use anyhow::Error;
@@ -16,6 +16,7 @@ mod alignment;
 mod bamio;
 mod basedepth_string;
 mod cigar_resolve;
+mod engine;
 mod output;
 mod overlap;
 mod params;
@@ -26,7 +27,6 @@ mod read_buf;
 mod read_filter;
 mod read_walker;
 mod refseq;
-mod threading;
 mod utils;
 
 fn _main() -> Result<(), Error> {

@@ -1,4 +1,4 @@
-use crate::utils::has_index;
+use crate::{params::STDOUT_ARG_STR, utils::has_index};
 
 use anyhow::{Context, Error};
 use rust_htslib::bam::{HeaderView, IndexedReader, Read, Reader, Record};
@@ -8,6 +8,12 @@ use std::path;
 pub enum BamDataSource {
     File(std::path::PathBuf),
     Stdin,
+}
+
+#[derive(Clone)]
+pub enum OutputDataDest {
+    File(String),
+    Stdout,
 }
 
 impl BamDataSource {
@@ -52,6 +58,25 @@ impl std::fmt::Display for BamDataSource {
         f.write_str(match self {
             Self::File(f) => f.to_str().unwrap_or("FILE"),
             Self::Stdin => "STDIN",
+        })
+    }
+}
+
+impl OutputDataDest {
+    pub fn from_string(s: &str) -> Self {
+        if s == STDOUT_ARG_STR {
+            Self::Stdout
+        } else {
+            Self::File(s.to_string())
+        }
+    }
+}
+
+impl std::fmt::Display for OutputDataDest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::File(f) => f,
+            Self::Stdout => "STDOUT",
         })
     }
 }

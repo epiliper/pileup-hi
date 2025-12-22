@@ -101,7 +101,7 @@ impl GenomeInterval {
 /// Parse any string for being compliant for the SAM region format, e.g.
 /// chr1:400-801
 fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
-    // region strings should have one colon and a single dash
+    // region strings should have one colon and a single dash, unless we only specify ref
     let col_count = s.chars().filter(|c| *c == ':').count();
     let dash_count = s.chars().filter(|c| *c == '-').count();
 

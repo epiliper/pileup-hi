@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+pub const STDOUT_ARG_STR: &str = "STDOUT";
 
 #[derive(Subcommand, Clone)]
 pub enum Commands {
@@ -48,6 +49,10 @@ pub struct InputParams {
 
 #[derive(Parser, Clone)]
 pub struct PileupParams {
+    /// Where to write all output to
+    #[arg(short = 'o', long = "output", default_value_t = STDOUT_ARG_STR.to_string())]
+    pub output: String,
+
     #[arg(short = 'a')]
     pub show_empty_coords: bool,
 

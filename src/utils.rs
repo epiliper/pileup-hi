@@ -1,4 +1,6 @@
-use crate::alignment::PileupAlignment;
+use std::{fs::OpenOptions, io::BufWriter};
+
+use crate::{alignment::PileupAlignment, bamio::OutputDataDest, output::TempOutputHandle};
 use anyhow::{Context, Error};
 
 pub fn read_ends_before_pos(a: &PileupAlignment, pos: i64) -> bool {
@@ -7,6 +9,33 @@ pub fn read_ends_before_pos(a: &PileupAlignment, pos: i64) -> bool {
 
 pub fn temp_fname(prefix: &str, suffix: &str, ext: &str) -> String {
     format!("{prefix}_{suffix}.{ext}")
+}
+
+/// Get a writer to a particular destination. Lock specifies whether or not
+/// we expect the writer to be the sole writer the source (pertinent if writing to stdout).
+pub fn get_writer(
+    handle: &OutputDataDest,
+    writer_cap: usize,
+    lock: bool,
+    append: bool,
+) -> Result<TempOutputHandle, Error> {
+    let dest: Box<dyn std::io::Write> = match handle {
+        OutputDataDest::File(p) => {
+            let mut o = OpenOptions::new();
+            Box::new(o.write(true).create(true).append(append).open(p)?)
+        }
+        OutputDataDest::Stdout => {
+            if lock {
+                Box::new(std::io::stdout().lock())
+            } else {
+                Box::new(std::io::stdout())
+            }
+        }
+    };
+
+    Ok(TempOutputHandle {
+        writer: BufWriter::with_capacity(writer_cap, dest),
+    })
 }
 
 pub fn has_index(bam_file: &str) -> Result<bool, Error> {

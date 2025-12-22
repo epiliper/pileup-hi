@@ -1,11 +1,17 @@
 use crate::alignment::PileupAlignment;
+use crate::bamio::OutputDataDest;
+use crate::engine::BUFWRITER_CAP;
+use crate::utils::{get_writer, temp_fname};
 use anyhow::Error;
 use log::warn;
 use std::fs::File;
-use std::io::{stdout, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::sync::Mutex;
 
-pub static TEMP_FILES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+pub static FILE_MERGE_SINGLETON: Mutex<OutputFileMerge> = Mutex::new(OutputFileMerge {
+    outfile: OutputDataDest::Stdout,
+    subfiles: vec![],
+});
 
 /// The interface requirements for a pileup output. It needs to give ref information,
 /// intake pileup alignments, update current ref info, display depth, and write itself.
@@ -26,53 +32,80 @@ pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     fn new() -> Self;
 }
 
+/// Used to keep track of our main output file and the subfiles we want to merge into it. Subfiles
+/// are ordered by thread ID.
+#[derive(Clone)]
+pub struct OutputFileMerge {
+    pub outfile: OutputDataDest,
+    pub subfiles: Vec<OutputDataDest>,
+}
+
+impl OutputFileMerge {
+    /// Copy the data in the subfiles over to the main file
+    pub fn merge<W: std::io::Write>(&self, mut dest: W) -> Result<(), Error> {
+        for s in &self.subfiles {
+            match s {
+                OutputDataDest::Stdout => anyhow::bail!("cannot merge from stdout! Critical error"),
+                OutputDataDest::File(ref f) => {
+                    let fhandle = File::open(f)?;
+                    let mut reader = BufReader::with_capacity(2 * 1024 * 1024, fhandle);
+                    std::io::copy(&mut reader, &mut dest)?;
+                    std::fs::remove_file(f)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Delete all files at once, useful if we abruptly exit
+    pub fn cleanup(&mut self) -> Result<(), Error> {
+        for s in &self.subfiles {
+            if let OutputDataDest::File(f) = s {
+                std::fs::remove_file(f)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// If main thread, return the writer to the final output file
+    pub fn get_writer(&self, thread_idx: usize) -> Result<TempOutputHandle, Error> {
+        if thread_idx == 0 {
+            get_writer(&self.outfile, BUFWRITER_CAP, true, true)
+        } else {
+            get_writer(&self.subfiles[thread_idx - 1], BUFWRITER_CAP, true, false)
+        }
+    }
+}
+
+pub fn generate_subfile_dests(outprefix: &str, n: usize, suffix: &str) -> Vec<OutputDataDest> {
+    let mut ret = Vec::with_capacity(n);
+    for i in 0..n {
+        let temp = temp_fname(outprefix, &i.to_string(), suffix);
+        ret.push(OutputDataDest::File(temp));
+    }
+
+    ret
+}
+
 pub struct TempOutputHandle {
-    writer: BufWriter<Box<dyn Write>>,
+    pub writer: BufWriter<Box<dyn Write>>,
 }
 
 impl TempOutputHandle {
-    pub fn new(fname: &str, writer_cap: usize) -> Result<Self, Error> {
-        let dest: Box<dyn Write> = if fname == "STDOUT" {
-            Box::new(stdout().lock())
-        } else {
-            Box::new(File::create(fname)?)
-        };
-
-        Ok(Self {
-            writer: BufWriter::with_capacity(writer_cap, dest),
-        })
-    }
-
     pub fn write(&mut self, data: &[u8]) {
         let _ = self.writer.write_all(data);
-        self.writer.flush().unwrap();
     }
-}
-
-pub fn merge_temp_outputs<W: std::io::Write>(outputs: &[String], mut dest: W) -> Result<(), Error> {
-    for fname in outputs {
-        if fname == "STDOUT" {
-            continue;
-        }
-        let fhandle = File::open(fname)?;
-        let mut reader = BufReader::with_capacity(2 * 1024 * 1024, fhandle);
-        std::io::copy(&mut reader, &mut dest)?;
-        std::fs::remove_file(fname)?;
-    }
-    dest.flush()?;
-    Ok(())
 }
 
 pub fn setup_exit_handler() {
     ctrlc::set_handler(|| {
         warn!("Received termination signal. Cleaning up intermediate files...");
-        if let Ok(files) = TEMP_FILES.lock() {
-            for fname in files.iter() {
-                if fname == "STDOUT" {
-                    continue;
-                };
-                let _ = std::fs::remove_file(fname);
-            }
+        if let Ok(mut outputs) = FILE_MERGE_SINGLETON.lock() {
+            outputs
+                .cleanup()
+                .expect("Failed to cleanup temp files during termination sequence");
         }
 
         std::process::exit(130);
