@@ -1,21 +1,23 @@
 use crate::{
-    bamio::{BamDataSource, BamReader},
-    output::{merge_temp_outputs, OrderedPileupOutput, OutputMethod, PileupOutputArray, TempOutputHandle, TEMP_FILES},
+    bamio::{BamDataSource, BamReader, OutputDataDest},
+    output::{
+        generate_subfile_dests, OrderedPileupOutput, OutputFileMerge, OutputMethod, PileupOutputArray,
+        TempOutputHandle, FILE_MERGE_SINGLETON,
+    },
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
-    utils::temp_fname,
 };
 
 use std::time::Instant;
 
 const OUTPUT_ARRAY_YIELD_SIZE: usize = 2000;
-const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
+pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
 
 use anyhow::Error;
 use log::{info, warn};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use std::io::{stdout, BufWriter};
+use std::io::BufWriter;
 
 pub struct PileupWorker {
     interval: GenomeInterval,
@@ -59,11 +61,13 @@ pub struct PileupEngine<T: OrderedPileupOutput> {
     plp_params: PileupParams,
     src: BamDataSource,
     output: T,
+    dest: OutputDataDest,
 }
 
 impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     pub fn initialize(in_params: InputParams, plp_params: PileupParams, output: T) -> Result<Self, Error> {
         let src = BamDataSource::from_string(&in_params.file)?;
+        let dest = OutputDataDest::from_string(&plp_params.output);
 
         let tempreader = BamReader::new(&src, 1)?;
         let header = &tempreader.header;
@@ -79,10 +83,19 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             plp_params,
             src,
             output,
+            dest,
         })
     }
 
     pub fn run(self) -> Result<(), Error> {
+        // remove old output file if it exists.
+        if let OutputDataDest::File(ref f) = self.dest {
+            if std::fs::exists(f)? {
+                warn!("Output file {} already exists! Overwriting...", f);
+                std::fs::remove_file(f)?;
+            }
+        }
+
         if self.plp_params.threads == 1 {
             self.run_single()
         } else if !self.src.has_index()? {
@@ -117,25 +130,30 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     pub fn run_multi(self) -> Result<(), Error> {
         let outprefix = self.src.fname()?;
 
-        for interval in &self.intervals {
-            let mut merge_map = Vec::with_capacity(self.plp_params.threads);
-            merge_map.push("STDOUT".to_string());
-            for i in 1..self.plp_params.threads {
-                merge_map.push(temp_fname(&outprefix, &i.to_string(), "temp.txt"))
-            }
+        let threadpool = rayon::ThreadPoolBuilder::new()
+            .num_threads(self.plp_params.threads)
+            .build()
+            .unwrap();
 
-            // we update TEMP_FILES in case the program exits before finishing. This way the files
+        info!("Initialized threadpool with {} threads...", self.plp_params.threads);
+
+        for interval in &self.intervals {
+            let mut output_merge_lock = FILE_MERGE_SINGLETON.lock().expect("Failed to lock output file mutex");
+
+            // we update the singleton tracking temp output files in case the program exits before finishing. This way the files
             // are marked for deletion during exit handling.
-            *TEMP_FILES.lock().expect("Failed to lock output file mutex") = merge_map.clone();
+            *output_merge_lock = OutputFileMerge {
+                outfile: self.dest.clone(),
+                subfiles: generate_subfile_dests(&outprefix, self.plp_params.threads - 1, "temp.txt"),
+            };
+
+            // we use thread-local copy so we can drop the mutex lock
+            let local_outputs = output_merge_lock.clone();
+            drop(output_merge_lock);
 
             let per_thread_intervals = interval
                 .n_chunks(self.plp_params.threads as i64)
                 .collect::<Vec<GenomeInterval>>();
-
-            let threadpool = rayon::ThreadPoolBuilder::new()
-                .num_threads(self.plp_params.threads)
-                .build()
-                .unwrap();
 
             info!(
                 "Split tid {} into {} chunks for {} threads...",
@@ -151,15 +169,13 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             threadpool.install(|| {
                 per_thread_intervals.par_iter().enumerate().for_each(|(i, chunk)| {
                     let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
-                    worker.run(
-                        self.output.clone(),
-                        TempOutputHandle::new(&merge_map[i], BUFWRITER_CAP).unwrap(),
-                        i,
-                    );
+                    let writer = local_outputs.get_writer(i).expect("failed to get writer");
+                    worker.run(self.output.clone(), writer, i);
                 });
             });
 
-            merge_temp_outputs(&merge_map, BufWriter::with_capacity(BUFWRITER_CAP, stdout().lock()))?;
+            let main_writer = local_outputs.get_writer(0)?;
+            local_outputs.merge(main_writer.writer)?;
 
             info!(
                 "Tid {} completed in {} seconds...",

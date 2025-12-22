@@ -75,14 +75,14 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
 /// The iterator responsible for coordinate-wise traversal of a BAM reference/region.
 /// Maintains a buffer of pileups, iterator state (current reference and position), and
 /// auxiliary structs needed for variant detection and output.
-pub struct PileupIterator<T: OrderedPileupOutput, W: std::io::Write> {
+pub struct PileupIterator<T: OrderedPileupOutput> {
     tid: i32,
     pos: i64,
     next_pos: i64,
     pub max_pos: i64,
     rbuf: ReadBuffer,
     output: Option<T>,
-    dest: OutputMethod<W, T>,
+    dest: OutputMethod<T>,
     pub reader: BamReader,
     refseq: Option<RefSeq>,
     read_filter: ReadFilter,
@@ -97,8 +97,8 @@ pub enum IterResult {
     NoData,
 }
 
-impl<T: OrderedPileupOutput + 'static, W: std::io::Write> PileupIterator<T, W> {
-    pub fn new(src: &BamDataSource, params: &PileupParams, output: T, dest: OutputMethod<W, T>) -> Result<Self, Error> {
+impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
+    pub fn new(src: &BamDataSource, params: &PileupParams, output: T, dest: OutputMethod<T>) -> Result<Self, Error> {
         let reader = BamReader::new(src, 2)?;
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);

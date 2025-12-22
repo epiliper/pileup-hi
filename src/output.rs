@@ -193,7 +193,7 @@ impl<T: OrderedPileupOutput> PileupOutputArray<T> {
 }
 
 /// Defines how to get output data from iterators from a thread. If using a single thread, we can just print directly and not waste memory queueing output.
-pub enum OutputMethod<W: std::io::Write, T: OrderedPileupOutput> {
-    WriteDirectly(W),
+pub enum OutputMethod<T: OrderedPileupOutput> {
+    WriteDirectly(Box<dyn Write>),
     QueueForOutput(PileupOutputArray<T>),
 }
