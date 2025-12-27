@@ -56,20 +56,20 @@ P 8.out pileuphi plp -Q0 -x -f c1.fa c1#pad3.bam
 P 10.out pileuphi plp -Q0 -x -f xx.fa xx#triplet.bam
 
 # # Test basic pileup options
-# P 13.out $samtools mpileup -x mpileup.1.$fmt
-# P 14.out $samtools mpileup -x mpileup.[123].$fmt
-# P 15.out ls -1 mpileup.[123].$fmt > 15.list.tmp; $samtools mpileup -x -b 15.list.tmp
-# P 16.out $samtools mpileup -x -f mpileup.ref.fa mpileup.1.$fmt
-# P 17.out $samtools mpileup -x -B -f mpileup.ref.fa mpileup.1.$fmt
-# P 18.out $samtools mpileup -x -B -f mpileup.ref.fa mpileup.1.$fmt 
-# P 19.out $samtools mpileup -x -f mpileup.ref.fa mpileup.1.$fmt 
+P 13.out pileuphi plp -x mpileup.1.$fmt
+# P 14.out pileuphi plp -x mpileup.[123].$fmt
+# P 15.out ls -1 mpileup.[123].$fmt > 15.list.tmp; $pileuphi -plp -x -b 15.list.tmp
+P 16.out pileuphi plp -x -f mpileup.ref.fa mpileup.1.$fmt
+P 17.out pileuphi plp -x -B -f mpileup.ref.fa mpileup.1.$fmt
+P 18.out pileuphi plp -x -B -f mpileup.ref.fa mpileup.1.$fmt 
+P 19.out pileuphi plp -x -f mpileup.ref.fa mpileup.1.$fmt 
 # P 20.out $samtools mpileup -x -6 -f mpileup.ref.fa mpileup.1.$fmt 
 # P 21.out $samtools mpileup -x -E -f mpileup.ref.fa mpileup.1.$fmt 
 # P 22.out $samtools mpileup -x -R -f mpileup.ref.fa mpileup.1.$fmt 
 
 # # -x option
-# P 23.out $samtools mpileup    -f mpileup.ref.fa overlap50.$fmt 
-# P 24.out $samtools mpileup -x -f mpileup.ref.fa overlap50.$fmt 
+P 23.out pileuphi plp    -f mpileup.ref.fa overlap50.$fmt 
+P 24.out pileuphi plp -x -f mpileup.ref.fa overlap50.$fmt 
 
 # # -6 for Illumina format input
 # P 25.out $samtools mpileup -x -6 -f mpileup.ref.fa overlapIllumina.bam 

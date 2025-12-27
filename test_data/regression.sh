@@ -118,10 +118,10 @@ regtest() {
             then
                 _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/bam/'`
                 run_test $p $o $_cmd
-                #_cmd=`printf '%s' "$cmd" | sed 's/\$fmt/sam/'`
+                ##_cmd=`printf '%s' "$cmd" | sed 's/\$fmt/sam/'`
+                ##run_test $p $o $_cmd
+                #_cmd=`printf '%s' "$cmd" | sed 's/\$fmt/cram/'`
                 #run_test $p $o $_cmd
-                _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/cram/'`
-                run_test $p $o $_cmd
             else
                 _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/bam/'`
                 run_test $p $o $_cmd

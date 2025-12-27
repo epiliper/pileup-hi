@@ -186,7 +186,9 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
 
         let dest = &mut self.dest;
 
-        let ref_sequence = &mut self.refseq.as_ref().map(|r| r.yield_seq());
+        let ref_sequence = &mut self.refseq.as_ref().and_then(|r| r.yield_seq());
+        // let ref_sequence = &mut self.refseq.as_ref().map(|r| r.yield_seq());
+        // let ref_sequence = self.get_refseq();
         let rbuf = &mut self.rbuf;
 
         match dest {
@@ -270,11 +272,11 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
     }
 
     pub fn realign(&mut self, plp_ref: PileupAlignmentRef) -> Result<i32, Error> {
-        if let Some(refseq) = &mut self.refseq {
+        if let Some(refseq) = self.refseq.as_ref().and_then(|r| r.yield_seq()) {
             if self.realign {
                 let rec = &mut plp_ref.borrow_mut().rec;
                 let flag = if self.redo_baq { 7 } else { 3 };
-                realign_record(rec, refseq.yield_seq(), refseq.len(), flag)?;
+                realign_record(rec, refseq, refseq.len() as i64, flag)?;
             }
         }
 
