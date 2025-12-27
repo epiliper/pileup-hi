@@ -62,7 +62,12 @@ impl OutputFileMerge {
     pub fn cleanup(&mut self) -> Result<(), Error> {
         for s in &self.subfiles {
             if let OutputDataDest::File(f) = s {
-                std::fs::remove_file(f)?;
+                if let Err(e) = std::fs::remove_file(f) {
+                    match e.kind() {
+                        std::io::ErrorKind::NotFound => (),
+                        _ => anyhow::bail!(e),
+                    }
+                }
             }
         }
 

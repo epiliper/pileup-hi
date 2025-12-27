@@ -165,7 +165,6 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
         if let Some(refseq) = &mut self.refseq {
             refseq.load_seq(&self.reader.cur_ref)?;
         }
-        // self.init_to_ref(false)?;
 
         Ok(())
     }
@@ -187,8 +186,6 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
         let dest = &mut self.dest;
 
         let ref_sequence = &mut self.refseq.as_ref().and_then(|r| r.yield_seq());
-        // let ref_sequence = &mut self.refseq.as_ref().map(|r| r.yield_seq());
-        // let ref_sequence = self.get_refseq();
         let rbuf = &mut self.rbuf;
 
         match dest {
@@ -303,7 +300,12 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
                 }
 
                 if r.pos() > self.max_pos {
-                    break;
+                    return Ok(IterResult::ReferenceEnd);
+                }
+
+                // need to fix this...
+                if r.pos() < self.pos && r.tid() == self.tid {
+                    continue;
                 }
 
                 let ret = self.rbuf.attempt_push(r, self.pos, self.tid);
