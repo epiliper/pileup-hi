@@ -1,4 +1,6 @@
-use anyhow::{Context, Error};
+use std::ops::Not;
+
+use anyhow::{bail, Context, Error};
 use rust_htslib::bam::HeaderView;
 
 /// A raw pileup region not yet validated to actually exist in a BAM header.
@@ -12,6 +14,7 @@ pub struct RawPileupRegion {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct GenomeInterval {
     pub tid: i64,
+    pub name: String,
     pub start: i64,
     pub end: i64,
 }
@@ -21,6 +24,7 @@ pub struct GenomeIntervalIterator<'a> {
     cur_end: i64,
     chunk_size: i64,
     interval: &'a GenomeInterval,
+    name: String,
     exhausted: bool,
 }
 
@@ -31,6 +35,7 @@ impl<'a> GenomeIntervalIterator<'a> {
             cur_end: interval.start + chunk_size,
             chunk_size,
             interval,
+            name: interval.name.to_string(),
             exhausted: false,
         }
     }
@@ -54,9 +59,8 @@ impl Iterator for GenomeIntervalIterator<'_> {
         if self.cur_end < self.interval.end {
             ret = Some(GenomeInterval {
                 tid: self.interval.tid,
-
+                name: self.name.to_string(),
                 start: self.cur_start,
-
                 end: self.cur_end,
             });
 
@@ -64,6 +68,7 @@ impl Iterator for GenomeIntervalIterator<'_> {
         } else if self.cur_start < self.interval.end {
             ret = Some(GenomeInterval {
                 tid: self.interval.tid,
+                name: self.name.to_string(),
                 start: self.cur_start,
                 end: std::cmp::min(self.cur_end, self.interval.end),
             });
@@ -90,7 +95,11 @@ impl GenomeInterval {
 
     #[allow(dead_code)]
     pub fn n_chunks(&self, n_chunks: i64) -> GenomeIntervalIterator<'_> {
-        GenomeIntervalIterator::new(self, (self.end - self.start + 1) / n_chunks + 1)
+        if n_chunks == 1 {
+            GenomeIntervalIterator::new(self, i64::MAX)
+        } else {
+            GenomeIntervalIterator::new(self, (self.end - self.start + 1) / n_chunks + 1)
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -98,60 +107,73 @@ impl GenomeInterval {
     }
 }
 
+// split a str by a delimiter and convert empty prefix/suffix to None
+fn split_check_ends(s: &str, delim: char) -> Option<(Option<&str>, Option<&str>)> {
+    s.split_once(delim).map(|(pre, post)| {
+        (
+            pre.is_empty().not().then_some(pre),
+            post.is_empty().not().then_some(post),
+        )
+    })
+}
+
 /// Parse any string for being compliant for the SAM region format, e.g.
 /// chr1:400-801
 fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
-    // region strings should have one colon and a single dash, unless we only specify ref
-    let col_count = s.chars().filter(|c| *c == ':').count();
-    let dash_count = s.chars().filter(|c| *c == '-').count();
+    match split_check_ends(s, ':') {
+        // no coordinates, just entire reference
+        None => Ok(RawPileupRegion {
+            name: s.to_string(),
+            start: 0,
+            end: i64::MAX,
+        }),
+        Some((None, _)) => bail!("Invalid region string {s}: ref name must come before ':'"),
 
-    // appears to be a whole-reference interval, e.g. Chr1 instead of Chr1:2000-4000
-    if col_count == 0 {
-        if dash_count != 0 {
-            anyhow::bail!("Region string invalid: \"{s}\"");
-        } else {
-            return Ok(RawPileupRegion {
-                name: s.to_string(),
-                start: 0,
-                end: i64::MAX,
-            });
+        Some((Some(_), None)) => {
+            bail!("Invalid region string {s}: coordinates must come after ':'")
         }
+
+        // parse coordinates
+        Some((Some(ref_str), Some(pos_str))) => match split_check_ends(pos_str, '-') {
+            None => {
+                // no dashes, meaning we expect a one-coordinate interval: e.g. Chr1:400
+                let pos = pos_str.replace(",", "").parse::<i64>()?;
+                if pos < 0 {
+                    bail!("Cannot have negative pos {pos}: {s}")
+                };
+
+                Ok(RawPileupRegion {
+                    name: ref_str.to_string(),
+                    start: pos,
+                    end: pos + 1,
+                })
+            }
+            Some((None, _)) => bail!("Invalid region string {s}: must have start coordinate before '-'"),
+            Some((Some(_), None)) => bail!("Invalid region string {s}: must have end coordinate after '-'"),
+
+            // We have something before and after a dash, so we expect numbers on both sides...
+            Some((Some(start), Some(end))) => {
+                let start_pos = start.replace(",", "").parse::<i64>()?;
+                let end_pos = end.replace(",", "").parse::<i64>()?;
+
+                if start_pos < 0 {
+                    bail!("cannot have negative start pos {start_pos}: {s}")
+                };
+                if end_pos < 0 {
+                    bail!("cannot have negative end pos {end_pos}: {s}")
+                };
+                if end_pos < start_pos {
+                    bail!("Cannot have end pos ({end_pos}) be smaller than start pos ({start_pos})")
+                };
+
+                Ok(RawPileupRegion {
+                    name: ref_str.to_string(),
+                    start: start_pos,
+                    end: end_pos,
+                })
+            }
+        },
     }
-
-    if col_count != 1 {
-        anyhow::bail!("Invalid number of colons ({col_count}) in region string \"{s}\"");
-    }
-
-    if dash_count != 1 {
-        anyhow::bail!("Invalid number of dashes ({dash_count}) in region string \"{s}\"");
-    }
-
-    let (ref_name, pos_str) = s.split_once(":").unwrap();
-    let (start, end) = pos_str.split_once("-").unwrap();
-
-    let mut start = start
-        .parse::<i64>()
-        .with_context(|| format!("Non-numeric start position: {}", start))?;
-
-    if start < 0 {
-        anyhow::bail!("Cannot have a negative start to a region: {}", start);
-    }
-
-    // subtract because BAM positions start at zero.
-    start = 0.max(start - 1);
-
-    let end = end
-        .parse::<i64>()
-        .with_context(|| format!("Non-numeric end position: {}", end))?;
-
-    if end < 0 {
-        anyhow::bail!("Cannot have a negative end to a region: {}", end);
-    }
-    Ok(RawPileupRegion {
-        name: ref_name.to_string(),
-        start,
-        end,
-    })
 }
 
 fn parse_region_arg(s: &str) -> Result<Vec<RawPileupRegion>, Error> {
@@ -170,8 +192,13 @@ pub fn intervals_from_header(header: &HeaderView) -> Result<Vec<GenomeInterval>,
     for tid in 0..header.target_count() {
         let end = header.target_len(tid).context("Unable to get target len")?.try_into()?;
 
+        let name = header.tid2name(tid);
+
         let reg = GenomeInterval {
-            // name: name.to_string(),
+            name: std::str::from_utf8(name)
+                .context("Unable to parse region name")?
+                .to_string(),
+
             tid: i64::from(tid),
             start: 0,
             end,
@@ -211,7 +238,7 @@ pub fn intervals_from_regions(
 
                 found = true;
                 queue.push(GenomeInterval {
-                    // name: rawreg.name.clone(),
+                    name: rawreg.name.clone(),
                     tid: i64::try_from(tid)?,
                     start: rawreg.start,
                     end: rawreg.end.min(canonlen as i64),

@@ -50,7 +50,12 @@ impl OutputFileMerge {
                     let fhandle = File::open(f)?;
                     let mut reader = BufReader::with_capacity(2 * 1024 * 1024, fhandle);
                     std::io::copy(&mut reader, &mut dest)?;
-                    std::fs::remove_file(f)?;
+                    if let Err(e) = std::fs::remove_file(f) {
+                        match e.kind() {
+                            std::io::ErrorKind::NotFound => (),
+                            _ => anyhow::bail!(e),
+                        }
+                    }
                 }
             }
         }

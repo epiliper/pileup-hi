@@ -63,13 +63,6 @@ impl ReadBuffer {
             return Ok(BufPushResult::BeforePos);
         }
 
-        // if !dif_ref && r.pos() == pos && self.depth >= self.max_depth {
-        //     if let Some(ov) = &mut self.overlap_map {
-        //         ov.delete_read(r);
-        //     }
-        //     return Ok(BufPushResult::MaxDepthMet);
-        // }
-
         let cstate = CigarState {
             cig: r.cigar(),
             icig: CIGAR_STATE_UNINIT,

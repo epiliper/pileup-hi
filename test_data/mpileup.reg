@@ -33,13 +33,6 @@ INIT x $samtools index xx#depth2.bam
 INIT x $samtools index xx#depth3.bam
 
 # Nasty file corner cases
-# P 1.out $samtools mpileup -B -Q0 -x -f ce.fa ce#large_seq.bam 
-# P 2.out $samtools mpileup -Q0 -x -f ce.fa ce#unmap.bam
-# P 3.out $samtools mpileup -Q0 -x -f ce.fa ce#unmap1.bam
-# P 4.out $samtools mpileup -Q0 -x -f ce.fa ce#unmap2.bam
-# P 5.out $samtools mpileup -Q0 -x -f c1.fa c1#clip.bam
-# P 6.out $samtools mpileup -Q0 -x -f c1.fa c1#pad1.bam
-# P 7.out $samtools mpileup -Q0 -x -f c1.fa c1#pad2.bam
 P 1.out pileuphi plp -B -Q0 -x -f ce.fa ce#large_seq.bam 
 P 2.out pileuphi plp -Q0 -x -f ce.fa ce#unmap.bam
 P 3.out pileuphi plp -Q0 -x -f ce.fa ce#unmap1.bam
@@ -75,23 +68,23 @@ P 24.out pileuphi plp -x -f mpileup.ref.fa overlap50.$fmt
 # P 25.out $samtools mpileup -x -6 -f mpileup.ref.fa overlapIllumina.bam 
 
 # # -A for anomalous read pairs
-# P 26.out $samtools mpileup    -x -Q0 anomalous.$fmt
-# P 27.out $samtools mpileup -A -x -Q0 anomalous.$fmt
+P 26.out pileuphi plp    -x -Q0 anomalous.$fmt
+P 27.out pileuphi plp -A -x -Q0 anomalous.$fmt
 
 # # -B
-# P 28.out $samtools mpileup -B -x -Q1 -f mpileup.ref.fa mpileup.1.$fmt 
+P 28.out pileuphi plp -B -x -Q1 -f mpileup.ref.fa mpileup.1.$fmt 
 
 # # -q; filter by mapping quality
-# P 29.out $samtools mpileup -q 61 1read.bam
-# P 30.out $samtools mpileup -q 60 1read.bam
+P 29.out pileuphi plp -q 61 1read.bam
+P 30.out pileuphi plp -q 60 1read.bam
 
 # # -Q filter by base quality
-# P 31.out $samtools mpileup -Q 7 1read.bam
-# P 32.out $samtools mpileup -Q 8 1read.bam
+P 31.out pileuphi plp -Q 7 1read.bam
+P 32.out pileuphi plp -Q 8 1read.bam
 
 # # -E
-# P 33.out $samtools mpileup    -x -f mpileup.ref.fa mpileup-E.bam
-# P 34.out $samtools mpileup -E -x -f mpileup.ref.fa mpileup-E.bam
+P 33.out pileuphi plp    -x -f mpileup.ref.fa mpileup-E.bam
+P 34.out pileuphi plp -E -x -f mpileup.ref.fa mpileup-E.bam
 
 # # -G for excluding RG. All bar one:
 # P 35.out $samtools view mpileup.1.bam|sed -n 's/.*RG:Z://;s/[^A-Z0-9].*//p'|sort -u |grep -v ERR013140 > 35.rg.tmp;$samtools mpileup -G 35.rg.tmp mpileup.1.bam
@@ -99,12 +92,12 @@ P 24.out pileuphi plp -x -f mpileup.ref.fa overlap50.$fmt
 # # Region based options
 # # SAM indices don't exist (no tabix support due to header?)
 # # CRAM index currently fails
-# P 37.out $samtools mpileup -x -r 17		mpileup.1.$fmt
-# P 38.out $samtools mpileup -x -r 17:4000 	mpileup.1.$fmt
-# P 39.out $samtools mpileup -x -r 17:4,000-4,010 mpileup.1.$fmt
-# P 40.out $samtools mpileup -l regions 		ce#5b.$fmt
-# P 41.out $samtools mpileup -l regions -r CHROMOSOME_V:40-60 ce#5b.$fmt
-# P 42.out $samtools mpileup -l regions -r CHROMOSOME_I:40-60 ce#5b.$fmt
+P 37.out pileuphi plp -x -r 17		mpileup.1.$fmt
+P 38.out pileuphi plp -x -r 17:4000 	mpileup.1.$fmt
+P 39.out pileuphi plp -x -r 17:4,000-4,010 mpileup.1.$fmt
+# P 40.out pileuphi plp -l regions 		ce#5b.$fmt
+# P 41.out pileuphi plp -l regions -r CHROMOSOME_V:40-60 ce#5b.$fmt
+# P 42.out pileuphi plp -l regions -r CHROMOSOME_I:40-60 ce#5b.$fmt
 
 # # --rf and --ff
 # P 43.out $samtools view -h -f 16 mpileup.1.bam | $samtools mpileup -x -

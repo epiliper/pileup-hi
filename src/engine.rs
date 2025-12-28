@@ -13,6 +13,7 @@ use std::time::Instant;
 
 const OUTPUT_ARRAY_YIELD_SIZE: usize = 2000;
 pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
+pub const MIN_COORDS_PER_THREAD: usize = 1000;
 
 use anyhow::Error;
 use log::{info, warn};
@@ -41,7 +42,7 @@ impl PileupWorker {
             OutputMethod::QueueForOutput(
                 PileupOutputArray::new(
                     1_000_000,
-                    std::cmp::min(self.interval.len() / 10, OUTPUT_ARRAY_YIELD_SIZE),
+                    std::cmp::min((self.interval.len() / 10).max(1), OUTPUT_ARRAY_YIELD_SIZE),
                     id,
                     out,
                 )
@@ -139,24 +140,28 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         for interval in &self.intervals {
             let mut output_merge_lock = FILE_MERGE_SINGLETON.lock().expect("Failed to lock output file mutex");
 
+            let n_chunks = if interval.len() < MIN_COORDS_PER_THREAD {
+                1
+            } else {
+                self.plp_params.threads as i64
+            };
+
             // we update the singleton tracking temp output files in case the program exits before finishing. This way the files
             // are marked for deletion during exit handling.
             *output_merge_lock = OutputFileMerge {
                 outfile: self.dest.clone(),
-                subfiles: generate_subfile_dests(&outprefix, self.plp_params.threads - 1, "temp.txt"),
+                subfiles: generate_subfile_dests(&outprefix, n_chunks as usize - 1, "temp.txt"),
             };
 
             // we use thread-local copy so we can drop the mutex lock
             let local_outputs = output_merge_lock.clone();
             drop(output_merge_lock);
 
-            let per_thread_intervals = interval
-                .n_chunks(self.plp_params.threads as i64)
-                .collect::<Vec<GenomeInterval>>();
+            let per_thread_intervals = interval.n_chunks(n_chunks).collect::<Vec<GenomeInterval>>();
 
             info!(
-                "Split tid {} into {} chunks for {} threads...",
-                interval.tid,
+                "Split ref {} into {} chunks for {} threads...",
+                interval.name,
                 per_thread_intervals.len(),
                 self.plp_params.threads
             );
