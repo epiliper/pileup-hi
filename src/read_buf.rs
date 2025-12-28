@@ -15,8 +15,8 @@ pub struct ReadBuffer {
 }
 
 pub enum BufPushResult {
-    Pushed(PileupAlignmentRef),
-    DifferentReference(PileupAlignmentRef),
+    Pushed,
+    DifferentReference,
     Unmapped,
     MaxDepthMet,
     BeforePos,
@@ -90,9 +90,9 @@ impl ReadBuffer {
         self.depth += 1;
 
         if dif_ref {
-            Ok(BufPushResult::DifferentReference(plp_ref))
+            Ok(BufPushResult::DifferentReference)
         } else {
-            Ok(BufPushResult::Pushed(plp_ref))
+            Ok(BufPushResult::Pushed)
         }
     }
 

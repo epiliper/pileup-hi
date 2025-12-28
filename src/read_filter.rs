@@ -17,7 +17,6 @@ pub struct ReadFilter {
     inc_flag: u16,
     exc_flag: u16,
     count_orphans: bool,
-    min_mapq: u8,
 }
 
 fn add_to_flag(flags: Vec<&str>, flag: &mut u16) -> Result<(), Error> {
@@ -43,17 +42,15 @@ fn add_to_flag(flags: Vec<&str>, flag: &mut u16) -> Result<(), Error> {
 }
 
 impl ReadFilter {
-    pub fn new(min_mapq: u8, count_orphans: bool, excl_flags: Vec<&str>, incl_flags: Vec<&str>) -> Result<Self, Error> {
+    pub fn new(count_orphans: bool, excl_flags: Vec<&str>, incl_flags: Vec<&str>) -> Result<Self, Error> {
         let mut s = Self {
             inc_flag: 0,
             exc_flag: 0,
             count_orphans,
-            min_mapq: 0,
         };
 
         s.add_incl_flags(incl_flags)?;
         s.add_excl_flags(excl_flags)?;
-        s.min_mapq = min_mapq;
         Ok(s)
     }
     pub fn add_excl_flags(&mut self, flags: Vec<&str>) -> Result<(), Error> {
@@ -78,10 +75,6 @@ impl ReadFilter {
 
         // check if orphan pair
         if !self.count_orphans && (read.is_paired() && !read.is_proper_pair()) {
-            return false;
-        }
-
-        if read.mapq() < self.min_mapq {
             return false;
         }
 

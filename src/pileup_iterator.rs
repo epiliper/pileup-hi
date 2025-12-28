@@ -1,5 +1,4 @@
 use crate::{
-    alignment::PileupAlignmentRef,
     bamio::{BamDataSource, BamReader},
     baq::realign_record,
     cigar_resolve::resolve_cigar,
@@ -100,6 +99,7 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
     show_all: bool,
     realign: bool,
     min_baseq: u8,
+    min_mapq: u8,
     redo_baq: bool,
 }
 
@@ -116,7 +116,6 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
 
         let read_filter = ReadFilter::new(
-            params.min_mapq,
             params.count_orphans,
             params.excl_flags.iter().map(|s| s.as_str()).collect(),
             params.incl_flags.iter().map(|s| s.as_str()).collect(),
@@ -129,6 +128,7 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
 
         let show_all = params.show_empty_coords;
         let min_baseq = params.min_baseq;
+        let min_mapq = params.min_mapq;
 
         let refseq = if let Some(ref_file) = &params.refseq {
             Some(RefSeq::from_file(ref_file)?)
@@ -150,6 +150,7 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
             refseq,
             cur_rec,
             min_baseq,
+            min_mapq,
             show_all,
             realign: !params.no_baq,
             redo_baq: params.redo_baq,
@@ -269,19 +270,6 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
         Ok(())
     }
 
-    #[inline(always)]
-    pub fn realign(&mut self, plp_ref: PileupAlignmentRef) -> Result<i32, Error> {
-        if let Some(refseq) = self.refseq.as_ref().and_then(|r| r.yield_seq()) {
-            if self.realign {
-                let rec = &mut plp_ref.borrow_mut().rec;
-                let flag = if self.redo_baq { 7 } else { 3 };
-                realign_record(rec, refseq, refseq.len() as i64, flag)?;
-            }
-        }
-
-        Ok(0)
-    }
-
     // load the read buffer until we either 1) run out of data or 2) hit a read at the next
     // position/tid.
     #[inline(always)]
@@ -292,7 +280,7 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
             // TODO: move the IO reading logic outside
             if let Some(read) = self.reader.read_no_alloc(&mut self.cur_rec) {
                 read?;
-                let r = &self.cur_rec;
+                let r = &mut self.cur_rec;
 
                 if r.is_unmapped() {
                     continue;
@@ -312,21 +300,30 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
                     continue;
                 }
 
+                if self.realign {
+                    if let Some(refseq) = self.refseq.as_ref().and_then(|r| r.yield_seq()) {
+                        let flag = if self.redo_baq { 7 } else { 3 };
+                        realign_record(r, refseq, refseq.len() as i64, flag)?;
+                    }
+                }
+
+                if r.mapq() < self.min_mapq {
+                    continue;
+                }
+
                 let ret = self.rbuf.attempt_push(r, self.pos, self.tid)?;
 
                 match ret {
                     BufPushResult::Unmapped => panic!(),
 
-                    BufPushResult::DifferentReference(pushed) => {
+                    BufPushResult::DifferentReference => {
                         self.next_tid = r.tid();
                         self.next_pos = r.pos();
-                        self.realign(pushed)?;
                         return Ok(IterResult::ReferenceEnd);
                     }
 
-                    BufPushResult::Pushed(pushed) => {
+                    BufPushResult::Pushed => {
                         self.next_pos = r.pos();
-                        self.realign(pushed)?;
                     }
 
                     // if we've capped our buffer to a given depth, we'll iterate over all

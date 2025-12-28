@@ -64,7 +64,7 @@ P 17.out pileuphi plp -x -B -f mpileup.ref.fa mpileup.1.$fmt
 P 18.out pileuphi plp -x -B -f mpileup.ref.fa mpileup.1.$fmt 
 P 19.out pileuphi plp -x -f mpileup.ref.fa mpileup.1.$fmt 
 # P 20.out $samtools mpileup -x -6 -f mpileup.ref.fa mpileup.1.$fmt 
-# P 21.out $samtools mpileup -x -E -f mpileup.ref.fa mpileup.1.$fmt 
+P 21.out pileuphi plp -x -E -f mpileup.ref.fa mpileup.1.$fmt 
 # P 22.out $samtools mpileup -x -R -f mpileup.ref.fa mpileup.1.$fmt 
 
 # # -x option
