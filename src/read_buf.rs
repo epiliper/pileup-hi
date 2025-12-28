@@ -1,5 +1,7 @@
 use crate::alignment::{cigar2rlen, CigarState, PileupAlignment, PileupAlignmentRef, CIGAR_STATE_UNINIT};
 use crate::overlap::{MapOverlaps, OverlapMap};
+use anyhow::Error;
+use log::error;
 use rust_htslib::bam::Record;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -22,11 +24,29 @@ pub enum BufPushResult {
 
 impl ReadBuffer {
     #[inline(always)]
-    pub fn attempt_push(&mut self, r: &Record, pos: i64, tid: i32) -> BufPushResult {
+    pub fn attempt_push(&mut self, r: &Record, pos: i64, tid: i32) -> Result<BufPushResult, Error> {
         let mut dif_ref = false;
 
         if r.is_unmapped() {
-            return BufPushResult::Unmapped;
+            return Ok(BufPushResult::Unmapped);
+        }
+
+        if r.tid() < tid {
+            error!("File unsorted by reference: tid {} comes after tid {}", r.tid(), tid);
+
+            anyhow::bail!("Unsorted");
+        }
+
+        if r.pos() < pos && r.tid() == tid {
+            error!("File unsorted by coordinate: pos {} comes after pos {}", r.pos(), pos,);
+            anyhow::bail!("Unsorted");
+        }
+
+        if !dif_ref && r.pos() == pos && self.depth >= self.max_depth {
+            if let Some(ov) = &mut self.overlap_map {
+                ov.delete_read(r);
+            }
+            return Ok(BufPushResult::MaxDepthMet);
         }
 
         if r.tid() != tid {
@@ -40,15 +60,15 @@ impl ReadBuffer {
         }
 
         if !dif_ref && r.pos() + read_len_from_cigar - 1 < pos {
-            return BufPushResult::BeforePos;
+            return Ok(BufPushResult::BeforePos);
         }
 
-        if r.tid() == tid && r.pos() == pos && self.depth >= self.max_depth {
-            if let Some(ov) = &mut self.overlap_map {
-                ov.delete_read(r);
-            }
-            return BufPushResult::MaxDepthMet;
-        }
+        // if !dif_ref && r.pos() == pos && self.depth >= self.max_depth {
+        //     if let Some(ov) = &mut self.overlap_map {
+        //         ov.delete_read(r);
+        //     }
+        //     return Ok(BufPushResult::MaxDepthMet);
+        // }
 
         let cstate = CigarState {
             cig: r.cigar(),
@@ -70,9 +90,9 @@ impl ReadBuffer {
         self.depth += 1;
 
         if dif_ref {
-            BufPushResult::DifferentReference(plp_ref)
+            Ok(BufPushResult::DifferentReference(plp_ref))
         } else {
-            BufPushResult::Pushed(plp_ref)
+            Ok(BufPushResult::Pushed(plp_ref))
         }
     }
 

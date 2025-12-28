@@ -18,6 +18,7 @@ use rust_htslib::bam::Record;
 pub const UNINIT_POS: i64 = i64::MAX - 1;
 pub const UNINIT_TID: i32 = i32::MAX - 1;
 
+#[inline(always)]
 pub fn generate_pileup<T: OrderedPileupOutput>(
     rbuf: &mut ReadBuffer,
     ref_sequence: &Option<&[u8]>,
@@ -268,6 +269,7 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
         Ok(())
     }
 
+    #[inline(always)]
     pub fn realign(&mut self, plp_ref: PileupAlignmentRef) -> Result<i32, Error> {
         if let Some(refseq) = self.refseq.as_ref().and_then(|r| r.yield_seq()) {
             if self.realign {
@@ -282,6 +284,7 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
 
     // load the read buffer until we either 1) run out of data or 2) hit a read at the next
     // position/tid.
+    #[inline(always)]
     pub fn intake(&mut self) -> Result<IterResult, Error> {
         while self.pos == self.next_pos {
             // we need to keep reading until we have gathered all reads overlapping a position.
@@ -299,16 +302,17 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
                     continue;
                 }
 
+                // we passed queried region
                 if r.pos() > self.max_pos {
                     return Ok(IterResult::ReferenceEnd);
                 }
 
-                // need to fix this...
-                if r.pos() < self.pos && r.tid() == self.tid {
+                // we're behind queried region
+                if r.pos() < self.pos && self.rbuf.depth == 0 {
                     continue;
                 }
 
-                let ret = self.rbuf.attempt_push(r, self.pos, self.tid);
+                let ret = self.rbuf.attempt_push(r, self.pos, self.tid)?;
 
                 match ret {
                     BufPushResult::Unmapped => panic!(),
