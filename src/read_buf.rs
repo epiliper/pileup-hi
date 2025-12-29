@@ -12,6 +12,8 @@ pub struct ReadBuffer {
     pub overlap_map: Option<OverlapMap>,
     pub depth: usize,
     pub max_depth: usize,
+    pub tid: i32,
+    pub pos: i64,
 }
 
 pub enum BufPushResult {
@@ -24,32 +26,42 @@ pub enum BufPushResult {
 
 impl ReadBuffer {
     #[inline(always)]
-    pub fn attempt_push(&mut self, r: &Record, pos: i64, tid: i32) -> Result<BufPushResult, Error> {
+    pub fn attempt_push(&mut self, r: &Record) -> Result<BufPushResult, Error> {
         let mut dif_ref = false;
 
         if r.is_unmapped() {
             return Ok(BufPushResult::Unmapped);
         }
 
-        if r.tid() < tid {
-            error!("File unsorted by reference: tid {} comes after tid {}", r.tid(), tid);
+        if r.tid() < self.tid {
+            error!(
+                "File unsorted by reference: tid {} comes after tid {}. Read name: {}",
+                r.tid(),
+                self.tid,
+                std::str::from_utf8(r.qname()).unwrap()
+            );
 
             anyhow::bail!("Unsorted");
         }
 
-        if r.pos() < pos && r.tid() == tid {
-            error!("File unsorted by coordinate: pos {} comes after pos {}", r.pos(), pos,);
+        if r.pos() < self.pos && self.depth > 0 && r.tid() == self.tid {
+            error!(
+                "File unsorted by coordinate: pos {} comes after pos {}. Read name: {}",
+                r.pos(),
+                self.pos,
+                std::str::from_utf8(r.qname()).unwrap()
+            );
             anyhow::bail!("Unsorted");
         }
 
-        if !dif_ref && r.pos() == pos && self.depth >= self.max_depth {
+        if !dif_ref && r.pos() == self.pos && self.depth >= self.max_depth {
             if let Some(ov) = &mut self.overlap_map {
                 ov.delete_read(r);
             }
             return Ok(BufPushResult::MaxDepthMet);
         }
 
-        if r.tid() != tid {
+        if r.tid() != self.tid && self.depth > 0 {
             dif_ref = true;
         }
 
@@ -59,7 +71,7 @@ impl ReadBuffer {
             self.len = read_len_from_cigar;
         }
 
-        if !dif_ref && r.pos() + read_len_from_cigar - 1 < pos {
+        if !dif_ref && r.pos() + read_len_from_cigar - 1 < self.pos {
             return Ok(BufPushResult::BeforePos);
         }
 
@@ -81,6 +93,9 @@ impl ReadBuffer {
 
         self.rbuf.push(Rc::clone(&plp_ref));
         self.depth += 1;
+
+        self.tid = r.tid();
+        self.pos = r.pos();
 
         if dif_ref {
             Ok(BufPushResult::DifferentReference)
@@ -108,6 +123,8 @@ impl ReadBuffer {
             len,
             depth: 0,
             max_depth,
+            tid: 0,
+            pos: 0,
         }
     }
 
@@ -122,8 +139,13 @@ impl ReadBuffer {
     pub fn reset(&mut self) {
         assert!(self.rbuf.is_empty());
         std::mem::swap(&mut self.rbuf, &mut self.backup_buf);
-        // if let Some(ov) = &mut self.overlap_map {
-        //     ov.shrink_to_fit();
-        // }
+        if let Some(r) = self.rbuf.first() {
+            let rec = &r.borrow().rec;
+            self.tid = rec.tid();
+            self.pos = rec.pos();
+            // if let Some(ov) = &mut self.overlap_map {
+            //     ov.shrink_to_fit();
+            // }
+        }
     }
 }

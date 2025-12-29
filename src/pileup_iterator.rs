@@ -241,8 +241,14 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
                     while self.pos < self.next_pos {
                         self.set_pileup()?;
                         self.pos += 1;
+
+                        if self.pos > self.max_pos {
+                            return Ok(());
+                        }
                     }
                 }
+
+                // Reference end is only returned when we haven't fetched. If we aren't fetching,
                 IterResult::ReferenceEnd => {
                     while self.rbuf.depth > 1 {
                         self.set_pileup()?;
@@ -259,6 +265,10 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
         while self.rbuf.depth > 0 {
             self.set_pileup()?;
             self.pos += 1;
+
+            if self.pos > self.max_pos {
+                return Ok(());
+            }
         }
 
         // if we are storing output in intermediate buffer, flush it.
@@ -295,11 +305,6 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
                     return Ok(IterResult::ReferenceEnd);
                 }
 
-                // we're behind queried region
-                if r.pos() < self.pos && self.rbuf.depth == 0 {
-                    continue;
-                }
-
                 if self.realign {
                     if let Some(refseq) = self.refseq.as_ref().and_then(|r| r.yield_seq()) {
                         let flag = if self.redo_baq { 7 } else { 3 };
@@ -311,7 +316,7 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
                     continue;
                 }
 
-                let ret = self.rbuf.attempt_push(r, self.pos, self.tid)?;
+                let ret = self.rbuf.attempt_push(r)?;
 
                 match ret {
                     BufPushResult::Unmapped => panic!(),
@@ -323,7 +328,7 @@ impl<T: OrderedPileupOutput + 'static> PileupIterator<T> {
                     }
 
                     BufPushResult::Pushed => {
-                        self.next_pos = r.pos();
+                        self.next_pos = self.next_pos.max(r.pos());
                     }
 
                     // if we've capped our buffer to a given depth, we'll iterate over all

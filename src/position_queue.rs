@@ -144,8 +144,8 @@ fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
 
                 Ok(RawPileupRegion {
                     name: ref_str.to_string(),
-                    start: pos,
-                    end: pos + 1,
+                    start: pos - 1,
+                    end: i64::MAX,
                 })
             }
             Some((None, _)) => bail!("Invalid region string {s}: must have start coordinate before '-'"),
@@ -168,8 +168,8 @@ fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
 
                 Ok(RawPileupRegion {
                     name: ref_str.to_string(),
-                    start: start_pos,
-                    end: end_pos,
+                    start: start_pos - 1,
+                    end: end_pos - 1,
                 })
             }
         },
