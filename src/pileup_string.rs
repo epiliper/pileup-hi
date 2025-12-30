@@ -192,7 +192,11 @@ pub fn expand_insertions(
             Cigar::Ins(l) => {
                 for _ in 0..l as usize {
                     read_pos = p.qpos + offset - p.del as usize;
-                    read_base = p.rec.seq()[read_pos];
+                    read_base = if read_pos < p.rec.seq_len() {
+                        p.rec.seq()[read_pos]
+                    } else {
+                        b'n'
+                    };
                     offset += 1;
                     match is_rev {
                         true => seq_buf.push(read_base.to_ascii_lowercase()),
@@ -235,7 +239,11 @@ pub fn write_plp(
             } else {
                 b'('
             };
-            let readbase = p.rec.seq()[p.qpos];
+            let readbase = if p.qpos < p.rec.seq_len() {
+                p.rec.seq()[p.qpos]
+            } else {
+                b'n'
+            };
 
             if readbase.eq_ignore_ascii_case(&refbase) {
                 match is_rev {

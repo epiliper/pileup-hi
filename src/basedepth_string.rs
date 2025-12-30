@@ -175,7 +175,11 @@ impl BaseDepthString {
     pub fn register_pileup(&mut self, p: &PileupAlignment, refseq: Option<&[u8]>) -> Result<(), Error> {
         match p.del {
             false => {
-                let readbase = p.rec.seq()[p.qpos];
+                let readbase = if p.qpos < p.rec.seq_len() {
+                    p.rec.seq()[p.qpos]
+                } else {
+                    b'n'
+                };
 
                 match readbase.to_ascii_uppercase() {
                     b'A' => self.a += 1,
@@ -238,7 +242,11 @@ pub fn expand_insertions(p: &PileupAlignment, seq_buf: &mut Vec<u8>, ndel: &mut 
             Cigar::Ins(l) => {
                 for _ in 0..l as usize {
                     read_pos = p.qpos + offset - p.del as usize;
-                    read_base = p.rec.seq()[read_pos];
+                    read_base = if read_pos < p.rec.seq_len() {
+                        p.rec.seq()[read_pos]
+                    } else {
+                        b'n'
+                    };
                     offset += 1;
                     seq_buf.push(read_base.to_ascii_uppercase());
                 }
