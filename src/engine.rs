@@ -37,7 +37,7 @@ impl PileupWorker {
     {
         let mut iterator = PileupIterator::new(
             &self.src,
-            &[self.interval.clone()],
+            std::slice::from_ref(&self.interval),
             &self.params,
             o,
             OutputMethod::QueueForOutput(
@@ -138,8 +138,6 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             .build()
             .unwrap();
 
-        info!("Initialized threadpool with {} threads...", self.plp_params.threads);
-
         for interval in &self.intervals {
             let mut output_merge_lock = FILE_MERGE_SINGLETON.lock().expect("Failed to lock output file mutex");
 
@@ -162,12 +160,11 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
             let per_thread_intervals = interval.n_chunks(n_chunks).collect::<Vec<GenomeInterval>>();
 
-            // info!(
-            //     "Split ref {} into {} chunks for {} threads...",
-            //     interval.name,
-            //     per_thread_intervals.len(),
-            //     self.plp_params.threads
-            // );
+            info!(
+                "Split ref {} into {} chunks...",
+                interval.name,
+                per_thread_intervals.len(),
+            );
 
             let src = &self.src.clone();
 
@@ -184,11 +181,11 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             let main_writer = local_outputs.get_writer(0)?;
             local_outputs.merge(main_writer.writer)?;
 
-            // info!(
-            //     "Tid {} completed in {} seconds...",
-            //     interval.tid,
-            //     before.elapsed().as_secs()
-            // );
+            info!(
+                "Tid {} completed in {} seconds...",
+                interval.tid,
+                before.elapsed().as_secs()
+            );
         }
 
         Ok(())
