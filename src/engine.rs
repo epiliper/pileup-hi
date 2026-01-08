@@ -7,13 +7,15 @@ use crate::{
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
+    utils::determine_thread_scheme,
 };
 
 use std::time::Instant;
 
-const OUTPUT_ARRAY_YIELD_SIZE: usize = 2000;
+const OUTPUT_ARRAY_YIELD_SIZE: i64 = 2000;
 pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
-pub const MIN_COORDS_PER_THREAD: usize = 1000;
+pub const MIN_COORDS_PER_THREAD: usize = 1_000_000;
+pub const MIN_BAM_READ_THREADS: usize = 2;
 
 use anyhow::Error;
 use log::{info, warn};
@@ -31,7 +33,7 @@ impl PileupWorker {
         Self { interval, params, src }
     }
 
-    pub fn run<T>(&mut self, o: T, out: TempOutputHandle, id: usize)
+    pub fn run<T>(&mut self, o: T, out: TempOutputHandle, id: usize, read_threads: usize)
     where
         T: OrderedPileupOutput + 'static,
     {
@@ -43,12 +45,13 @@ impl PileupWorker {
             OutputMethod::QueueForOutput(
                 PileupOutputArray::new(
                     1_000_000,
-                    std::cmp::min((self.interval.len() / 10).max(1), OUTPUT_ARRAY_YIELD_SIZE),
+                    std::cmp::min((self.interval.len() / 10).max(1), OUTPUT_ARRAY_YIELD_SIZE) as usize,
                     id,
                     out,
                 )
                 .unwrap(),
             ),
+            read_threads,
         )
         .unwrap();
 
@@ -123,6 +126,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             &self.plp_params,
             self.output.clone(),
             OutputMethod::WriteDirectly(lock),
+            MIN_BAM_READ_THREADS,
         )?;
 
         iterator.auto_loop()
@@ -139,26 +143,24 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             .unwrap();
 
         for interval in &self.intervals {
-            let mut output_merge_lock = FILE_MERGE_SINGLETON.lock().expect("Failed to lock output file mutex");
+            let thread_scheme = determine_thread_scheme(self.plp_params.threads, interval.len());
 
-            let n_chunks = if interval.len() < MIN_COORDS_PER_THREAD {
-                1
-            } else {
-                self.plp_params.threads as i64
-            };
+            let mut output_merge_lock = FILE_MERGE_SINGLETON.lock().expect("Failed to lock output file mutex");
 
             // we update the singleton tracking temp output files in case the program exits before finishing. This way the files
             // are marked for deletion during exit handling.
             *output_merge_lock = OutputFileMerge {
                 outfile: self.dest.clone(),
-                subfiles: generate_subfile_dests(&outprefix, n_chunks as usize - 1, "temp.txt"),
+                subfiles: generate_subfile_dests(&outprefix, thread_scheme.worker_threads - 1, "temp.txt"),
             };
 
             // we use thread-local copy so we can drop the mutex lock
             let local_outputs = output_merge_lock.clone();
             drop(output_merge_lock);
 
-            let per_thread_intervals = interval.n_chunks(n_chunks).collect::<Vec<GenomeInterval>>();
+            let per_thread_intervals = interval
+                .n_chunks(thread_scheme.worker_threads as i64)
+                .collect::<Vec<GenomeInterval>>();
 
             info!(
                 "Split ref {} into {} chunks...",
@@ -174,7 +176,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 per_thread_intervals.par_iter().enumerate().for_each(|(i, chunk)| {
                     let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
                     let writer = local_outputs.get_writer(i).expect("failed to get writer");
-                    worker.run(self.output.clone(), writer, i);
+                    worker.run(self.output.clone(), writer, i, thread_scheme.read_threads);
                 });
             });
 

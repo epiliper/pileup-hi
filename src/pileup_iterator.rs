@@ -46,9 +46,10 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         params: &PileupParams,
         output: T,
         dest: OutputMethod<T>,
+        reader_threads: usize,
     ) -> Result<Self, Error> {
         assert!(!intervals.is_empty());
-        let reader = BamReader::new(src, 2)?;
+        let reader = BamReader::new(src, reader_threads)?;
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
 
