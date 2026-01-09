@@ -69,7 +69,12 @@ pub fn determine_thread_scheme(threads: usize, reflen: i64) -> FileThreadScheme 
             worker_threads: threads,
         }
     } else {
-        let nthreads = reflen / (threads * MIN_COORDS_PER_THREAD) + 1;
+        let mut nthreads = reflen / MIN_COORDS_PER_THREAD;
+        let remainder = reflen % MIN_COORDS_PER_THREAD;
+
+        if remainder >= MIN_COORDS_PER_THREAD {
+            nthreads += 1;
+        }
 
         FileThreadScheme {
             worker_threads: nthreads,

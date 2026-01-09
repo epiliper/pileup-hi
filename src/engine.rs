@@ -14,7 +14,7 @@ use std::time::Instant;
 
 const OUTPUT_ARRAY_YIELD_SIZE: i64 = 2000;
 pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
-pub const MIN_COORDS_PER_THREAD: usize = 1_000_000;
+pub const MIN_COORDS_PER_THREAD: usize = 250_000; // heuristic from benchmarking
 pub const MIN_BAM_READ_THREADS: usize = 2;
 
 use anyhow::Error;
