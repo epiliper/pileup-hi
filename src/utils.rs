@@ -1,10 +1,6 @@
 use std::{fs::OpenOptions, io::BufWriter};
 
-use crate::{
-    alignment::PileupAlignment,
-    bamio::OutputDataDest,
-    engine::{MIN_BAM_READ_THREADS, MIN_COORDS_PER_THREAD},
-};
+use crate::{alignment::PileupAlignment, bamio::OutputDataDest};
 
 pub type OutputWriter = BufWriter<Box<dyn std::io::Write>>;
 
@@ -43,37 +39,4 @@ pub fn has_index(bam_file: &str) -> Result<bool, Error> {
 
     std::fs::exists(&potential_index)
         .with_context(|| format!("Unable to check directory for file {}", &potential_index))
-}
-
-pub struct FileThreadScheme {
-    pub read_threads: usize,
-    pub worker_threads: usize,
-}
-
-pub fn determine_thread_scheme(threads: usize, reflen: i64) -> FileThreadScheme {
-    let reflen = reflen as usize;
-
-    if reflen < MIN_COORDS_PER_THREAD {
-        FileThreadScheme {
-            read_threads: threads - 1,
-            worker_threads: 1,
-        }
-    } else if reflen > MIN_COORDS_PER_THREAD * threads {
-        FileThreadScheme {
-            read_threads: MIN_BAM_READ_THREADS,
-            worker_threads: threads,
-        }
-    } else {
-        let mut nthreads = reflen / MIN_COORDS_PER_THREAD;
-        let remainder = reflen % MIN_COORDS_PER_THREAD;
-
-        if remainder >= MIN_COORDS_PER_THREAD {
-            nthreads += 1;
-        }
-
-        FileThreadScheme {
-            worker_threads: nthreads,
-            read_threads: (threads - nthreads).max(MIN_BAM_READ_THREADS),
-        }
-    }
 }

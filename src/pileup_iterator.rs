@@ -2,6 +2,7 @@ use crate::{
     bamio::{BamDataSource, BamReader},
     baq::realign_record,
     cigar_resolve::resolve_cigar,
+    engine::MIN_BAM_READ_THREADS,
     output::{OrderedPileupOutput, OutputMethod},
     params::PileupParams,
     position_queue::GenomeInterval,
@@ -46,10 +47,9 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         params: &PileupParams,
         output: T,
         dest: OutputMethod<T>,
-        reader_threads: usize,
     ) -> Result<Self, Error> {
         assert!(!intervals.is_empty());
-        let reader = BamReader::new(src, reader_threads)?;
+        let reader = BamReader::new(src, MIN_BAM_READ_THREADS)?;
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
 
