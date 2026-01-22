@@ -170,6 +170,48 @@ impl<T: OrderedPileupOutput> PileupOutputArray<T> {
 
 /// Defines how to get output data from iterators from a thread. If using a single thread, we can just print directly and not waste memory queueing output.
 pub enum OutputMethod<T: OrderedPileupOutput> {
-    WriteDirectly(Box<dyn Write>),
+    WriteDirectly(T, Box<dyn Write>),
     QueueForOutput(PileupOutputArray<T>),
+}
+
+impl<T: OrderedPileupOutput> OutputMethod<T> {
+    pub fn cur(&mut self) -> &mut T {
+        match self {
+            Self::WriteDirectly(output, _writer) => output,
+            Self::QueueForOutput(output_arr) => output_arr.cur_mut(),
+        }
+    }
+
+    pub fn reject(&mut self) -> Result<bool, Error> {
+        match self {
+            Self::WriteDirectly(output, _writer) => output.clear(),
+            Self::QueueForOutput(output_arr) => {
+                output_arr.tombstone();
+                output_arr.advance()?;
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn check(&mut self, emit: bool) -> Result<bool, Error> {
+        if emit {
+            self.take()?;
+            Ok(true)
+        } else {
+            self.reject()?;
+            Ok(false)
+        }
+    }
+
+    pub fn take(&mut self) -> Result<bool, Error> {
+        match self {
+            Self::WriteDirectly(output, writer) => output.write(writer)?,
+            Self::QueueForOutput(output_arr) => {
+                output_arr.push();
+                output_arr.advance()?;
+            }
+        }
+
+        Ok(true)
+    }
 }

@@ -16,15 +16,30 @@ use crate::{
 use anyhow::Error;
 use rust_htslib::bam::Record;
 
+#[derive(Clone)]
+enum EmitStrategy {
+    /// output absolutely nothing
+    Nothing,
+
+    /// output for a position if it has coverage
+    ByPos,
+
+    /// output for an entire reference if it has coverage anywhere
+    ByRef,
+
+    /// output all coordinates for all references regardless of coverage
+    Everything,
+}
+
 pub struct PileupIterator<T: OrderedPileupOutput> {
-    intervals: Vec<GenomeInterval>,
-    cur_interval: usize,
     tid: i32,
     next_tid: i32,
     last_tid_with_cov: i32,
     pos: i64,
     next_pos: i64,
     max_pos: i64,
+
+    emit: EmitStrategy,
 
     rbuf: ReadBuffer,
     output: Option<T>,
@@ -33,8 +48,6 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
     refseq: Option<RefSeq>,
     read_filter: ReadFilter,
     cur_rec: Record,
-    show_empty_coords: bool,
-    show_empty_regions: bool,
     realign: bool,
     min_baseq: u8,
     min_mapq: u8,
@@ -62,8 +75,14 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
         let cur_rec = Record::new();
 
-        let show_empty_coords = params.show_empty_coords || params.show_empty_regions;
-        let show_empty_regions = params.show_empty_regions;
+        let emit = if params.show_empty_regions {
+            EmitStrategy::Everything
+        } else if params.show_empty_coords {
+            EmitStrategy::ByRef
+        } else {
+            EmitStrategy::ByPos
+        };
+
         let min_baseq = params.min_baseq;
         let min_mapq = params.min_mapq;
 
@@ -80,22 +99,19 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             tid,
             next_tid,
             last_tid_with_cov,
-            intervals: intervals.to_vec(),
-            cur_interval: 0,
             pos,
             next_pos,
             max_pos,
             rbuf,
             output: Some(output),
             dest,
+            emit,
             reader,
             read_filter,
             refseq,
             cur_rec,
             min_baseq,
             min_mapq,
-            show_empty_coords,
-            show_empty_regions,
             realign: !params.no_baq,
             redo_baq: params.redo_baq,
         })
@@ -112,7 +128,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
         // don't bother going through read buffer if it starts beyond the
         // current coordinate
-        if !self.show_empty_regions && !self.show_empty_coords {
+        if matches!(self.emit, EmitStrategy::ByPos) {
             if self.rbuf.head.tid == self.tid && self.rbuf.head.pos > self.pos {
                 skip = true;
             }
@@ -122,49 +138,61 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             }
         }
 
-        let dest = &mut self.dest;
-
         let ref_sequence = &mut self.refseq.as_ref().and_then(|r| r.yield_seq());
         let rbuf = &mut self.rbuf;
+        let generated;
+        let depth;
 
-        match dest {
-            OutputMethod::WriteDirectly(ref mut writer) => {
-                let mut output = self.output.take().unwrap();
-                output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
+        {
+            let output = self.dest.cur();
+            output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
 
-                let generated = if !skip {
-                    generate_pileup(rbuf, ref_sequence, &mut output, self.pos, self.tid, self.min_baseq)?
-                } else {
-                    false
-                };
-
-                if generated || output.depth() > 0 || self.show_empty_coords {
-                    self.last_tid_with_cov = self.tid;
-                    output.write(writer)?;
-                } else {
-                    output.clear();
-                }
-                self.output = Some(output);
-            }
-
-            OutputMethod::QueueForOutput(output_chunk) => {
-                let output = output_chunk.cur_mut();
-                output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, *ref_sequence);
-                let generated = if !skip {
-                    generate_pileup(rbuf, ref_sequence, output, self.pos, self.tid, self.min_baseq)?
-                } else {
-                    false
-                };
-                if generated || output.depth() > 0 || self.show_empty_coords {
-                    self.last_tid_with_cov = self.tid;
-                    output_chunk.push();
-                } else {
-                    output_chunk.tombstone();
-                }
-
-                output_chunk.advance()?;
-            }
+            if !skip {
+                generated = generate_pileup(rbuf, ref_sequence, output, self.pos, self.tid, self.min_baseq)?;
+                depth = output.depth();
+            } else {
+                generated = false;
+                depth = 0;
+            };
         }
+
+        let written = match self.emit {
+            EmitStrategy::Nothing => self.dest.reject()?,
+            EmitStrategy::ByPos => self.dest.check(generated || depth > 0)?,
+            EmitStrategy::ByRef => self
+                .dest
+                .check((self.tid == self.last_tid_with_cov) || self.rbuf.head.tid == self.tid)?,
+            EmitStrategy::Everything => self.dest.take()?,
+        };
+
+        if written {
+            self.last_tid_with_cov = self.tid;
+        }
+
+        Ok(())
+    }
+
+    fn preload_region(&mut self, interval: &GenomeInterval) -> Result<(), Error> {
+        let rewind = (interval.start - 150).max(0);
+
+        self.pos = rewind;
+        self.next_pos = self.pos;
+        self.max_pos = interval.start - 1;
+
+        self.tid = interval.tid as i32;
+        self.next_tid = interval.tid as i32;
+
+        self.reader.init_to_ref(self.tid as u32, self.pos, interval.end)?;
+
+        let preset = self.emit.clone();
+        self.emit = EmitStrategy::Nothing;
+
+        self.process_single_ref()?;
+        assert!(self.pos <= interval.start);
+        self.pos = interval.start;
+        self.next_pos = interval.start;
+
+        self.emit = preset;
 
         Ok(())
     }
@@ -189,14 +217,18 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         output.clear();
         self.output = Some(output);
 
-        self.reader
-            .init_to_ref(interval.tid as u32, interval.start, interval.end)?;
+        if interval.start != 0 && (self.rbuf.max_depth != usize::MAX || self.rbuf.overlap_map.is_some()) {
+            self.preload_region(&interval)?;
+        } else {
+            self.reader
+                .init_to_ref(interval.tid as u32, interval.start, interval.end)?;
+            self.pos = interval.start;
+            self.next_pos = interval.start;
+        }
 
         self.tid = interval.tid as i32;
         self.next_tid = self.tid;
 
-        self.pos = interval.start;
-        self.next_pos = interval.start;
         self.max_pos = interval.end - 1;
 
         if let Some(refseq) = &mut self.refseq {
@@ -216,7 +248,6 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
         loop {
             // we need to keep reading until we have gathered all reads overlapping a position.
-            //
             // TODO: move the IO reading logic outside
             if let Some(read) = self.reader.read_no_alloc(&mut self.cur_rec) {
                 read?;
@@ -232,6 +263,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
                 // we passed queried region
                 if r.pos() > self.max_pos {
+                    self.rbuf.attempt_push(self.tid, self.pos, r)?;
                     return Ok(IterResult::ReferenceEnd);
                 }
 
@@ -280,10 +312,25 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         }
     }
 
-    pub fn auto_loop(&mut self) -> Result<(), Error> {
-        assert!(!self.intervals.is_empty());
-        self.set_ref(self.intervals[0].clone())?;
+    pub fn auto_loop2(&mut self, intervals: &[GenomeInterval]) -> Result<(), Error> {
+        for interval in intervals {
+            self.set_ref(interval.clone())?;
+            self.process_single_ref()?;
 
+            match self.emit {
+                EmitStrategy::ByRef | EmitStrategy::Everything => {
+                    while self.pos <= self.max_pos {
+                        self.set_pileup()?;
+                        self.pos += 1;
+                    }
+                }
+                _ => (),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn process_single_ref(&mut self) -> Result<(), Error> {
         loop {
             // eprintln!(
             //     "MAIN: {} {} {} {}",
@@ -291,19 +338,19 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             // );
             match self.intake()? {
                 IterResult::Generated => {
-                    // eprintln!("GENERATED: {} {}", self.rbuf.head.tid, self.rbuf.head.pos);
+                    // eprintln!("GENERATED: {} {} {}", self.pos, self.rbuf.head.tid, self.rbuf.head.pos);
                     if self.rbuf.head.pos < self.pos
-                        || (self.show_empty_coords && self.rbuf.head.tid == self.tid)
-                        || self.show_empty_regions
+                        || (matches!(self.emit, EmitStrategy::ByRef) && self.rbuf.head.tid == self.tid)
+                        || matches!(self.emit, EmitStrategy::Everything)
                     {
-                        while self.pos < self.next_pos {
+                        while self.pos < self.next_pos && self.pos <= self.max_pos {
                             self.set_pileup()?;
                             self.pos += 1;
                         }
                     } else {
                         self.pos = self.rbuf.head.pos;
 
-                        while self.pos < self.next_pos {
+                        while self.pos < self.next_pos && self.pos <= self.max_pos {
                             self.set_pileup()?;
                             self.pos += 1
                         }
@@ -312,8 +359,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
                 IterResult::ReferenceEnd => {
                     // eprintln!(
-                    //     "REF END: {} {} {}",
-                    //     self.rbuf.head.tid, self.rbuf.head.pos, self.rbuf.depth
+                    //     "REF END:{} {} {} {}",
+                    //     self.pos, self.rbuf.head.tid, self.rbuf.head.pos, self.rbuf.depth
                     // );
                     // if we have reads for current ref still in buffer, process them until they no
                     // longer overlap with cur pos.
@@ -322,61 +369,14 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                         self.pos += 1;
                     }
 
-                    // if we are showing empty coords and this region has depth ANYWHERE, emit for
-                    // all coords.
-                    if self.last_tid_with_cov == self.tid && self.show_empty_coords {
-                        while self.pos <= self.max_pos {
-                            self.set_pileup()?;
-                            self.pos += 1;
-                        }
-                    }
-
-                    // if we are showing empty regions, emit for entire ref regardless of depth.
-                    if self.show_empty_regions {
-                        while self.pos <= self.max_pos {
-                            self.set_pileup()?;
-                            self.pos += 1;
-                        }
-                    }
-
-                    self.cur_interval += 1;
-
-                    if self.cur_interval >= self.intervals.len() {
-                        break;
-                    }
-
-                    // if showing empty regions, repeat emission for entire refs we skipped while
-                    // intaking reads.
-                    if self.next_tid as i64 > self.intervals[self.cur_interval].tid + 1 && self.show_empty_regions {
-                        while self.pos <= self.max_pos {
-                            self.set_pileup()?;
-                            self.pos += 1;
-                        }
-
-                        while self.tid < self.next_tid {
-                            self.set_ref(self.intervals[self.cur_interval].clone())?;
-
-                            while self.pos <= self.max_pos {
-                                self.set_pileup()?;
-                                self.pos += 1;
-                            }
-
-                            self.cur_interval += 1;
-                        }
-                    }
-
-                    if self.cur_interval >= self.intervals.len() {
-                        break;
-                    } else {
-                        self.set_ref(self.intervals[self.cur_interval].clone())?;
-                    }
+                    break;
                 }
             }
         }
 
         // if we are storing output in intermediate buffer, flush it.
         match &mut self.dest {
-            OutputMethod::WriteDirectly(_) => (),
+            OutputMethod::WriteDirectly(_, _) => (),
             OutputMethod::QueueForOutput(out) => out.write_all()?,
         }
 

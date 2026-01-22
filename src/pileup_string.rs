@@ -57,6 +57,7 @@ impl OrderedPileupOutput for PileupString {
     }
 
     fn clear(&mut self) {
+        self.depth = 0;
         self.seqbuf.clear();
         self.qualbuf.clear();
     }

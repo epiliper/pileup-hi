@@ -48,7 +48,7 @@ impl PileupWorker {
         )
         .unwrap();
 
-        iterator.auto_loop().unwrap();
+        iterator.auto_loop2(std::slice::from_ref(&self.interval)).unwrap();
     }
 }
 
@@ -125,11 +125,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             &self.intervals,
             &self.plp_params,
             self.output.clone(),
-            OutputMethod::WriteDirectly(lock),
+            OutputMethod::WriteDirectly(self.output.clone(), lock),
         )?;
 
-        iterator.auto_loop()
-        // iterator.auto_loop(&self.intervals[0], true)
+        iterator.auto_loop2(&self.intervals)
     }
 
     /// Use separate threads for processing and writing. Each processing thread owns its IO readers for input BAM, index, and any other files.
