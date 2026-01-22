@@ -2,6 +2,9 @@ use crate::alignment::{PileupAlignment, CIGAR_STATE_UNINIT};
 use rust_htslib::bam::record::Cigar;
 
 #[inline(always)]
+/// This is a port of htslib's cigar_resolver2 from sam.c. I didn't try to reinvent the wheel by
+/// implementing it in highly-idiomatic Rust; the algorithm is delicate enough as is. Shouldn't be
+/// changed unless you have a very good reason.
 pub fn resolve_cigar(plp: &mut PileupAlignment, pos: i64) {
     let cs = &mut plp.cstate;
     let cig = &cs.cig;

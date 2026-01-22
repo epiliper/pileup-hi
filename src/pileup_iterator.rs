@@ -32,6 +32,8 @@ enum EmitStrategy {
     Everything,
 }
 
+/// The state machine performing the pileup generation and advancing across region coordinates.
+/// The type T dictates what output it generates.
 pub struct PileupIterator<T: OrderedPileupOutput> {
     tid: i32,
     next_tid: i32,
@@ -58,6 +60,8 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
 }
 
 impl<T: OrderedPileupOutput> PileupIterator<T> {
+    /// Create a new pileup iterator from a data source (e.g. bam file), a set of query regions,
+    /// input params and an output type.
     pub fn new(
         src: &BamDataSource,
         intervals: &[GenomeInterval],
@@ -122,9 +126,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     }
 
     /// Generate a pileup from all bases passing the minimum quality filter and covering the
-    /// iterator's current reference position.
-    ///
-    /// If allocate is true, allocate a new output type T
+    /// iterator's current reference position. Importantly, generate_pileup() is where stale reads no longer
+    /// overlapping the query position are removed.
     #[inline(always)]
     pub fn set_pileup(&mut self) -> Result<(), Error> {
         assert!(self.rbuf.backup_buf.is_empty());
@@ -176,6 +179,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         Ok(())
     }
 
+    /// Update iterator state and prepare ref-specific data given a new interval.
     fn set_ref(&mut self, interval: GenomeInterval) -> Result<(), Error> {
         if interval.tid >= self.reader.header.target_count() as i64 {
             anyhow::bail!("Interval has TID exceeding header maximum!");
@@ -213,8 +217,9 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         Ok(())
     }
 
-    // load the read buffer until we either 1) run out of data or 2) hit a read at the next
-    // position/tid.
+    /// Read from an input BAM until we find either 1) read starting at a coordinate beyond the end of the
+    /// read buffer, 2) run out of data, 3) exceed the max position of this region, or 4) encounter
+    /// a read mapping to a new reference.
     #[inline(always)]
     pub fn intake(&mut self) -> Result<IterResult, Error> {
         if self.reader.eof {
@@ -287,6 +292,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         }
     }
 
+    /// main function of the PileupIterator: run it on all the query intervals given.
     pub fn auto_loop2(&mut self, intervals: &[GenomeInterval]) -> Result<(), Error> {
         self.read_len = BamReader::sample_read_len(&self.reader.src)?;
 
@@ -307,6 +313,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         Ok(())
     }
 
+    /// Iterate across the coordinates of a query interval and produce output.
     pub fn process_single_ref(&mut self) -> Result<(), Error> {
         loop {
             // eprintln!(
@@ -367,6 +374,9 @@ pub enum IterResult {
 }
 
 #[inline(always)]
+/// Perform the pileup given a read buffer, optional ref sequence, an output destination, and query
+/// position. Importantly, reads found to no longer overlap (pos, tid) will be removed from the
+/// buffer.
 pub fn generate_pileup<T: OrderedPileupOutput>(
     rbuf: &mut ReadBuffer,
     ref_sequence: &Option<&[u8]>,
@@ -390,14 +400,14 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
         // record starts beyond position, which means that the remainder of the buffer does
         // too. Skip the rest of the records.
         if r.rec.tid() > tid || (r.rec.pos() > pos && r.rec.tid() == tid) {
-            // println!("DISCARDING: {} {} | {} {}", r.rec.pos(), r.rec.tid(), pos, tid);
             drop(r);
             rbuf.backup_buf.push(raw);
             skip_remainder_of_buf = true;
             continue;
         }
 
-        // record is old and no longer overlaps the query coordinate. Discard.
+        // record is old and no longer overlaps the query coordinate. We discard it by not adding
+        // it to the alternate buffer.
         if read_ends_before_pos(&r, pos) || r.rec.tid() < tid {
             rbuf.depth -= 1;
             if let Some(ref mut overlap) = rbuf.overlap_map {
