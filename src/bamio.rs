@@ -4,6 +4,8 @@ use anyhow::{Context, Error};
 use rust_htslib::bam::{HeaderView, IndexedReader, Read, Reader, Record};
 use std::path;
 
+const BAM_READ_LEN_SAMPLE_SIZE: usize = 10;
+
 #[derive(Clone)]
 pub enum BamDataSource {
     File(std::path::PathBuf),
@@ -87,6 +89,7 @@ pub struct BamReader {
     pub header: HeaderView,
     pub cur_ref: String,
     pub eof: bool,
+    pub src: BamDataSource,
 }
 
 impl BamReader {
@@ -116,7 +119,32 @@ impl BamReader {
             cur_ref,
             eof: false,
             has_index: _has_index,
+            src: src.clone(),
         })
+    }
+
+    pub fn sample_read_len(src: &BamDataSource) -> Result<usize, Error> {
+        let mut reader = Self::new(src, 1)?; // 1 thread
+        let mut cached = Record::new();
+
+        let mut nsampled = 0;
+        let mut totallen = 0;
+
+        for _ in 0..BAM_READ_LEN_SAMPLE_SIZE {
+            if let Some(r) = reader.read_no_alloc(&mut cached) {
+                r?;
+                nsampled += 1;
+                totallen += cached.seq_len();
+            } else {
+                break;
+            }
+        }
+
+        if nsampled == 0 {
+            anyhow::bail!("Unable to find reads for input file. Does the file have reads?")
+        } else {
+            Ok(totallen / nsampled)
+        }
     }
 
     pub fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>> {

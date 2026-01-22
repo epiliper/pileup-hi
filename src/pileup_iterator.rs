@@ -52,6 +52,8 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
     min_baseq: u8,
     min_mapq: u8,
     redo_baq: bool,
+
+    read_len: usize,
 }
 
 impl<T: OrderedPileupOutput> PileupIterator<T> {
@@ -114,6 +116,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             min_mapq,
             realign: !params.no_baq,
             redo_baq: params.redo_baq,
+            read_len: 0,
         })
     }
 
@@ -173,7 +176,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     }
 
     fn preload_region(&mut self, interval: &GenomeInterval) -> Result<(), Error> {
-        let rewind = (interval.start - 150).max(0);
+        let rewind = (interval.start - self.read_len as i64).max(0);
 
         self.pos = rewind;
         self.next_pos = self.pos;
@@ -313,6 +316,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     }
 
     pub fn auto_loop2(&mut self, intervals: &[GenomeInterval]) -> Result<(), Error> {
+        self.read_len = BamReader::sample_read_len(&self.reader.src)?;
+
         for interval in intervals {
             self.set_ref(interval.clone())?;
             self.process_single_ref()?;
