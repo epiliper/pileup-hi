@@ -26,7 +26,6 @@ mod pileup_string;
 mod position_queue;
 mod read_buf;
 mod read_filter;
-mod read_walker;
 mod refseq;
 mod utils;
 

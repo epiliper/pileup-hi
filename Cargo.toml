@@ -9,6 +9,9 @@ description = "High-throughput BAM pileup generator"
 name = "pileuphi"
 path = "src/main.rs"
 
+[build-dependencies]
+cc = "1.0"
+
 [dependencies]
 anyhow = "1.0.98"
 bio = "2.3.0"
