@@ -179,6 +179,34 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         Ok(())
     }
 
+    /// When given a region not starting at zero, rewind by 2X read length in order to populate the
+    /// overlap map to ensure read mates get nulled. This should only be used in a multi-threading
+    /// context.
+    fn preload_region(&mut self, interval: &GenomeInterval) -> Result<(), Error> {
+        let rewind = (interval.start - (2 * self.read_len) as i64).max(0);
+
+        self.pos = rewind;
+        self.next_pos = self.pos;
+        self.max_pos = interval.start - 1;
+
+        self.tid = interval.tid as i32;
+        self.next_tid = self.tid;
+
+        self.reader.init_to_ref(interval.tid as u32, self.pos, interval.end)?;
+
+        let preset = self.emit.clone();
+        self.emit = EmitStrategy::Nothing;
+        self.process_single_ref()?;
+
+        assert!(self.pos <= interval.start);
+        self.pos = interval.start;
+        self.next_pos = self.pos;
+
+        self.emit = preset;
+
+        Ok(())
+    }
+
     /// Update iterator state and prepare ref-specific data given a new interval.
     fn set_ref(&mut self, interval: GenomeInterval) -> Result<(), Error> {
         if interval.tid >= self.reader.header.target_count() as i64 {
@@ -200,10 +228,13 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         output.clear();
         self.output = Some(output);
 
-        self.reader
-            .init_to_ref(interval.tid as u32, interval.start, interval.end)?;
-        self.pos = interval.start;
-        self.next_pos = interval.start;
+        if interval.start != 0 && self.rbuf.overlap_map.is_some() {
+            self.preload_region(&interval)?;
+        } else {
+            self.reader.init_to_ref(interval.tid as u32, interval.start, interval.end)?;
+            self.pos = interval.start;
+            self.next_pos = interval.start;
+        }
 
         self.tid = interval.tid as i32;
         self.next_tid = self.tid;
