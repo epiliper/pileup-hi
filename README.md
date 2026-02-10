@@ -65,3 +65,13 @@ where `COMMAND` is either `histo` or `plp` for the different output formats. Oth
 - `-Q/--min-BQ`: minimum phred score for a base to be counted. Default = 13.
 - `-B/--no-BAQ`: Disable BAQ realignment (it's disabled if you don't provide a reference FASTA with `-f`).
 - `E/--redo-BAQ`: recalculate BAQ realignment. Requires a reference FASTA.
+
+## testing
+pileup-hi uses the same regression test suite as samtools mpileup, but truncated to the flags pileup-hi supports. You can run tests by cloning this repository and: 
+
+```bash
+cd test_data
+sh regression.sh mpileup.reg
+```
+
+Expect regression tests to be added as more functionality is added.
