@@ -1,4 +1,13 @@
 # pileup-hi
+
+<p align="center"> <img src="imgs/pileuphi.png" alt="Peter the parallel
+pileup jellyfish" width="65%"/> </p>
+
+<div align="center"> Extensible, high-throughput pileup generation from
+SAM/BAM</div>   
+
+## Table of contents
+
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
