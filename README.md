@@ -1,21 +1,21 @@
+# pileup-hi
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
-- [pileup-hi](#pileup-hi)
-  - [What pileup-hi is (and what it is not)](#what-pileup-hi-is-and-what-it-is-not)
-  - [Installation and demo instructions](#installation-and-demo-instructions)
-      - [Requirements](#requirements)
-      - [Option 1. install with cargo (recommended)](#option-1-install-with-cargo-recommended)
-      - [Option 2: compile from source](#option-2-compile-from-source)
-      - [Test command](#test-command)
-  - [When should I use it over _samtools mpileup_?](#when-should-i-use-it-over-_samtools-mpileup_)
-  - [How can I use it?](#how-can-i-use-it)
-    - [Options](#options)
-  - [Testing](#testing)
+- [What pileup-hi is (and what it is not)](#what-pileup-hi-is-and-what-it-is-not)
+- [Installation and demo instructions](#installation-and-demo-instructions)
+    - [Requirements](#requirements)
+    - [Option 1: install with cargo (recommended)](#option-1-install-with-cargo-recommended)
+    - [Option 2: compile from source](#option-2-compile-from-source)
+    - [Test command](#test-command)
+- [When should I use it over _samtools mpileup_?](#when-should-i-use-it-over-_samtools-mpileup_)
+- [How can I use it?](#how-can-i-use-it)
+  - [Options](#options)
+- [Testing](#testing)
+- [The new `histo` format](#the-new-histo-format)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-# pileup-hi
 ## What pileup-hi is (and what it is not)
 pileup-hi is a high-throughput pileup engine for the SAM/BAM file formats. It is multi-threaded and supports the development of custom output formats. This repository contains code to compile the CLI program itself, as well as library code detailing how to construct your own output format (`src/output.rs`).
 
@@ -58,7 +58,55 @@ pileuphi plp -t 1 -ABQ0 c1#pad1.bam -f c1.fa
 
 # if you have samtools mpileup installed, feel free to compare
 samtools mpileup -ABQ0 c1#pad1.bam -f c1.fa
+
+# also, check out the 'histo' mode
+pileuphi histo -t 1 -ABQ0 c1#pad1.bam -f c1.fa
 ```
+
+You should see something like this:  
+
+**pileup-hi plp**
+```
+c1	1	A	9	^!.^!.^!.^!.^!.^!.^!.^!.^!.	~~~~~~~~~
+c1	2	A	9	.........-3CCG	~~~~~~~~~
+c1	3	C	9	........*	~~~~~~~~~
+c1	4	C	9	........-1G*	~~~~~~~~~
+c1	5	G	9	....+6GTTAAC.+6*TTAA*.+6GTT***.+6***AAC*+6**TA**-1C*+6GTTAAC-3CGG	~~~~~~~~~
+c1	6	C	9	.......**	~~~~~~~~~
+c1	7	G	9	........*	~~~~~~~~~
+c1	8	G	9	........*	~~~~~~~~~
+c1	9	T	9	.........	~~~~~~~~~
+c1	10	T	9	.$.$.$.$.$.$.$.$.$	~~~~~~~~~
+```
+
+**samtools mpileup**
+```
+c1	1	A	9	^!.^!.^!.^!.^!.^!.^!.^!.^!.	~~~~~~~~~
+c1	2	A	9	.........-3CCG	~~~~~~~~~
+c1	3	C	9	........*	~~~~~~~~~
+c1	4	C	9	........-1G*	~~~~~~~~~
+c1	5	G	9	....+6GTTAAC.+6*TTAA*.+6GTT***.+6***AAC*+6**TA**-1C*+6GTTAAC-3CGG	   ~~~~~~~~~
+c1	6	C	9	.......**	~~~~~~~~~
+c1	7	G	9	........*	~~~~~~~~~
+c1	8	G	9	........*	~~~~~~~~~
+c1	9	T	9	.........	~~~~~~~~~
+c1	10	T	9	.$.$.$.$.$.$.$.$.$	~~~~~~~~~
+```
+
+**pileup-hi histo**
+```
+c1	1	9	9	0	0	0	0	0	0	[]	     []
+c1	2	9	9	0	0	0	0	0	0	[]	     [1CCG]
+c1	3	9	0	0	8	0	0	1	0	[]	     []
+c1	4	9	0	0	8	0	0	1	0	[]	     [1G]
+c1	5	9	0	7	0	0	0	2	0	[2GTTAAC 1*TTAA* 1GTT*** 1***AAC 1**TA**]	[1C 1CGG]
+c1	6	9	0	0	7	0	0	2	0	[]	     []
+c1	7	9	0	8	0	0	0	1	0	[]	     []
+c1	8	9	0	8	0	0	0	1	0	[]	     []
+c1	9	9	0	0	0	9	0	0	0	[]	     []
+c1	10	9	0	0	0	9	0	0	0	[]	     []
+```
+
 
 You can also clone this repository and run the entire regression test suite. See [the testing section](#testing).
 
@@ -108,3 +156,33 @@ sh regression.sh mpileup.reg
 ```
 
 Expect regression tests to be added as more functionality is added.
+
+## The new `histo` format
+`histo` was developed as a condensed version of the pileup output format that remains a constant size regardless of alignment depth: it does so by providing a *count* of nucleotides rather than a *list*, and excludes qualities altogether. 
+
+`histo` is intended to maintain the minimum data necessary to do variant calling or consensus genome assembly (I have to work with viruses sometimes), but if you feel like the format needs an addition, feel free to raise an issue.
+
+An example of the differences between `plp` and `histo` can be seen in the [Installation and demo instructions section](#test-command).
+
+Below is an explanation of the format:
+
+- column 1: reference name
+- column 2: reference coordinate
+- column 3: depth (**not including gaps**)
+- column 4: #A's
+- column 5: #G's
+- column 6: #C's
+- column 7: #T's
+- column 8: #T's
+- column 9: #N's
+- column 10: #Gaps
+- column 11: #Refskips
+- Column 12: space-delimited unique insertions\*
+- Column 13: space-delimited unique deletions\*
+
+\*Insertions and deletions are represented by their *count* followed by their *sequence*. For example:
+```
+[4AT 2A] in deletion column (13): 
+    - 4 reads w/ deletions of ref bases AT
+    - 2 reads w/ deletions of ref base A.
+```
