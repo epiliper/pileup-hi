@@ -1,5 +1,22 @@
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+
+- [pileup-hi](#pileup-hi)
+  - [What pileup-hi is (and what it is not)](#what-pileup-hi-is-and-what-it-is-not)
+  - [Installation and demo instructions](#installation-and-demo-instructions)
+      - [Requirements](#requirements)
+      - [Option 1. install with cargo (recommended)](#option-1-install-with-cargo-recommended)
+      - [Option 2: compile from source](#option-2-compile-from-source)
+      - [Test command](#test-command)
+  - [When should I use it over _samtools mpileup_?](#when-should-i-use-it-over-_samtools-mpileup_)
+  - [How can I use it?](#how-can-i-use-it)
+    - [Options](#options)
+  - [Testing](#testing)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 # pileup-hi
-## what is pileup-hi, and what is it not? 
+## What pileup-hi is (and what it is not)
 pileup-hi is a high-throughput pileup engine for the SAM/BAM file formats. It is multi-threaded and supports the development of custom output formats. This repository contains code to compile the CLI program itself, as well as library code detailing how to construct your own output format (`src/output.rs`).
 
 pileup-hi is not an end-to-end variant calling platform: like _samtools mpileup_, it is a low-level SAM/BAM parser that is meant to be built upon with tools that identify variants, assemble genomes, etc. (e.g. iVar). pileup-hi was developed to retrieve raw nucleotide alignment data from datasets with size/depth that is computationally challenging for other software. 
@@ -11,13 +28,13 @@ pileup-hi currently has two subcommands that dictate which output format it emit
 - `plp`: standard _samtools mpileup_ output format.
 - `histo`: a list of nucleotide and indel frequencies per coordinate, essentially a condensed form of the pileup format that doesn't grow linearly with alignment depth.
 
-## how can I install it? 
+## Installation and demo instructions
 #### Requirements
 - an installation of htslib 1.2.2 or higher on your system. If you have samtools 1.2.2 or higher on your system, you should be good. Run `samtools --version`, which prints the version of htslib, to check.
 
 If you need to install or upgrade htslib on MacOS, see about installing it via [homebrew](https://brew.sh/) for easy upgrading in the future. For Linux, please use your distribution's package manager.
 
-####  Option 1. install with cargo
+####  Option 1: install with cargo (recommended)
 If you don't have cargo installed, see [here](https://rust-lang.org/tools/install/).
 ```bash
 cargo install pileup-hi
@@ -30,7 +47,22 @@ cd pileup-hi
 make build
 ```
 
-## when should I use it over _samtools mpileup_?
+#### Test command
+
+You can download and test an input file from this repository's `test_data` directory using the code below. 
+```
+wget https://raw.githubusercontent.com/epiliper/pileup-hi/main/test_data/c1%23pad1.bam
+wget https://raw.githubusercontent.com/epiliper/pileup-hi/main/test_data/c1.fa
+
+pileuphi plp -t 1 -ABQ0 c1#pad1.bam -f c1.fa
+
+# if you have samtools mpileup installed, feel free to compare
+samtools mpileup -ABQ0 c1#pad1.bam -f c1.fa
+```
+
+You can also clone this repository and run the entire regression test suite. See [the testing section](#testing).
+
+## When should I use it over _samtools mpileup_?
 This question is answered in detail in the manuscript associated with this software, which you can find [here]().
 In short:  
 
@@ -38,10 +70,11 @@ In short:
 2. You have very high-depth datasets and you wish to save space with the abbreviated histo format, as well as save time.
 3. When you want to leverage multiple CPU cores to gain a speedup with longer genomes (even if your BAM only has one reference).
 
-## how can I use it?
+## How can I use it?
 pileup-hi attempts to stay consistent with the CLI of samtools mpileup when possible. Below are a list of parameters you can supply. Run `pileuphi <plp|histo> --help` for more information.
 
 usage: `pileuphi <COMMAND> <FILE> [OPTIONS]`
+
 
 where `COMMAND` is either `histo` or `plp` for the different output formats. Other arguments are shared for both commands.
 
@@ -66,7 +99,7 @@ where `COMMAND` is either `histo` or `plp` for the different output formats. Oth
 - `-B/--no-BAQ`: Disable BAQ realignment (it's disabled if you don't provide a reference FASTA with `-f`).
 - `E/--redo-BAQ`: recalculate BAQ realignment. Requires a reference FASTA.
 
-## testing
+## Testing
 pileup-hi uses the same regression test suite as samtools mpileup, but truncated to the flags pileup-hi supports. You can run tests by cloning this repository and: 
 
 ```bash
