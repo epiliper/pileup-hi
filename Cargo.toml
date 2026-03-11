@@ -35,6 +35,7 @@ ctrlc = { version = "3.5.1", features = ["termination"] }
 log = "0.4.29"
 env_logger = "0.11.8"
 fxhash = "0.2.1"
+zmij = "1.0.21"
 
 [profile.dev]
 overflow-checks = false

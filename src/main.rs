@@ -29,7 +29,7 @@ mod pileup_string;
 mod position_queue;
 mod read_buf;
 mod read_filter;
-// mod realign_report;
+mod realign_report;
 mod refseq;
 mod utils;
 
@@ -44,12 +44,12 @@ fn _main() -> Result<(), Error> {
 
     match params.command {
         Commands::Plp(params) => {
-            let engine = PileupEngine::initialize(params.inp, params.plp, PileupString::new())?;
+            let engine = PileupEngine::initialize(params.inp, params.plp, params.realn, PileupString::new())?;
             engine.run()?
         }
 
         Commands::Histo(params) => {
-            let engine = PileupEngine::initialize(params.inp, params.plp, BaseDepthString::new())?;
+            let engine = PileupEngine::initialize(params.inp, params.plp, params.realn, BaseDepthString::new())?;
             engine.run()?;
         }
     };

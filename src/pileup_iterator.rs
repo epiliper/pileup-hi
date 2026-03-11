@@ -1,14 +1,14 @@
 use crate::{
     bamio::{BamDataSource, BamReader},
-    baq::realign_record,
     cigar_resolve::resolve_cigar,
     engine::{RefSeqHandle, MIN_BAM_READ_THREADS},
     output::{OrderedPileupOutput, OutputMethod},
     overlap::MapOverlaps,
-    params::PileupParams,
+    params::{PileupParams, RealignParams},
     position_queue::GenomeInterval,
     read_buf::{BufPushResult, ReadBuffer},
     read_filter::ReadFilter,
+    realign_report::{BAQRealigner, Realigner},
     utils::read_ends_before_pos,
 };
 
@@ -50,10 +50,9 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
     refseq: RefSeqHandle,
     read_filter: ReadFilter,
     cur_rec: Record,
-    realign: bool,
+    realign: Option<Realigner<BAQRealigner>>,
     min_baseq: u8,
     min_mapq: u8,
-    redo_baq: bool,
 
     read_len: usize,
 }
@@ -65,6 +64,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         src: &BamDataSource,
         refseq: RefSeqHandle,
         params: &PileupParams,
+        realn_params: &RealignParams,
         output: T,
         dest: OutputMethod<T>,
     ) -> Result<Self, Error> {
@@ -94,6 +94,16 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         let pos @ next_pos @ max_pos = -1;
         let tid @ next_tid @ last_tid_with_cov = -1;
 
+        let mut realign = if refseq.is_some() {
+            Realigner::<BAQRealigner>::construct_from_args(realn_params, src)?
+        } else {
+            None
+        };
+
+        if let Some(r) = realign.as_mut() {
+            r.core.redo_baq = realn_params.redo_baq;
+        }
+
         Ok(Self {
             tid,
             next_tid,
@@ -107,12 +117,11 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             emit,
             reader,
             read_filter,
+            realign,
             refseq,
             cur_rec,
             min_baseq,
             min_mapq,
-            realign: !params.no_baq,
-            redo_baq: params.redo_baq,
             read_len: 0,
         })
     }
@@ -221,6 +230,10 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         self.output = Some(output);
 
         if interval.start != 0 && self.rbuf.overlap_map.is_some() {
+            if let Some(r) = self.realign.as_mut() {
+                r.disable()
+            };
+
             self.preload_region(&interval)?;
         } else {
             self.reader
@@ -228,6 +241,10 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             self.pos = interval.start;
             self.next_pos = interval.start;
         }
+
+        if let Some(r) = self.realign.as_mut() {
+            r.enable()
+        };
 
         self.tid = interval.tid as i32;
         self.next_tid = self.tid;
@@ -252,7 +269,6 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
         loop {
             // we need to keep reading until we have gathered all reads overlapping a position.
-            // TODO: move the IO reading logic outside
             if let Some(read) = self.reader.read_no_alloc(&mut self.cur_rec) {
                 read?;
                 let r = &mut self.cur_rec;
@@ -265,11 +281,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                     continue;
                 }
 
-                if self.realign {
-                    if let Some(ref refseq) = self.refseq {
-                        let flag = if self.redo_baq { 7 } else { 3 };
-                        realign_record(r, refseq, refseq.len() as i64, flag)?;
-                    }
+                if let Some(realigner) = self.realign.as_mut() {
+                    realigner.realign(r, &self.reader.cur_ref, self.refseq.as_mut().unwrap())?;
                 }
 
                 // we passed queried region
@@ -396,10 +409,10 @@ pub enum IterResult {
     Generated,
 }
 
-#[inline(always)]
 /// Perform the pileup given a read buffer, optional ref sequence, an output destination, and query
 /// position. Importantly, reads found to no longer overlap (pos, tid) will be removed from the
 /// buffer.
+#[inline(always)]
 pub fn generate_pileup<T: OrderedPileupOutput>(
     rbuf: &mut ReadBuffer,
     refseq: &RefSeqHandle,

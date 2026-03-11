@@ -25,10 +25,7 @@ pub struct Args {
 
 pub fn parse_or_quit() -> Args {
     match Args::try_parse() {
-        Ok(p) => {
-            // no argument checking at the moment, leaving here for the future.
-            p
-        }
+        Ok(p) => p,
         Err(e) => {
             e.print().unwrap();
             std::process::exit(1)
@@ -43,6 +40,9 @@ pub struct Params {
 
     #[clap(flatten)]
     pub plp: PileupParams,
+
+    #[clap(flatten)]
+    pub realn: RealignParams,
 }
 
 #[derive(Parser, Clone)]
@@ -53,6 +53,30 @@ pub struct InputParams {
     /// only process a particular bam region (e.g. chr1:0-8000)
     #[arg(short = 'r', long = "region")]
     pub region: Option<String>,
+}
+
+#[derive(Parser, Clone)]
+pub struct RealignParams {
+    /// Optional output path for a realignment report.
+    #[arg(long = "realign-report", conflicts_with = "no_baq")]
+    pub report_file: Option<std::path::PathBuf>,
+
+    /// Minimum fraction of realigned reads at a position for it to be included in the realignment
+    /// report.
+    #[arg(long = "realign-report-thres", default_value_t = 0.1)]
+    pub report_realign_thres: f32,
+
+    /// Optional BAM output path for realigned reads.
+    #[arg(long = "realign-bam-out", conflicts_with = "no_baq")]
+    pub realign_bam_out: Option<std::path::PathBuf>,
+
+    /// Disable calcluation of base alignment quality (BAQ)
+    #[arg(short = 'B', long = "no-BAQ", default_value_t = false)]
+    pub no_baq: bool,
+
+    /// Calculate BAQ even when BAQ already exists
+    #[arg(short = 'E', long = "redo-BAQ", default_value_t = false, conflicts_with("no_baq"))]
+    pub redo_baq: bool,
 }
 
 #[derive(Parser, Clone)]
@@ -105,12 +129,4 @@ pub struct PileupParams {
     /// Minimum phred score for a base to be counted
     #[arg(short = 'Q', long = "min-BQ", default_value_t = 13)]
     pub min_baseq: u8,
-
-    /// Disable calcluation of base alignment quality (BAQ)
-    #[arg(short = 'B', long = "no-BAQ", default_value_t = false)]
-    pub no_baq: bool,
-
-    /// Calculate BAQ even when BAQ already exists
-    #[arg(short = 'E', long = "redo-BAQ", default_value_t = false, conflicts_with("no_baq"))]
-    pub redo_baq: bool,
 }

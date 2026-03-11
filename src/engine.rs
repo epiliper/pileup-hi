@@ -4,7 +4,7 @@ use crate::{
         generate_subfile_dests, OrderedPileupOutput, OutputFileMerge, OutputMethod, PileupOutputArray,
         FILE_MERGE_SINGLETON,
     },
-    params::{InputParams, PileupParams},
+    params::{InputParams, PileupParams, RealignParams},
     pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
     refseq::RefSeq,
@@ -31,12 +31,23 @@ use std::io::BufWriter;
 pub struct PileupWorker {
     interval: GenomeInterval,
     params: PileupParams,
+    realn_params: RealignParams,
     src: BamDataSource,
 }
 
 impl PileupWorker {
-    pub fn new(params: PileupParams, interval: GenomeInterval, src: BamDataSource) -> Self {
-        Self { interval, params, src }
+    pub fn new(
+        params: PileupParams,
+        realn_params: RealignParams,
+        interval: GenomeInterval,
+        src: BamDataSource,
+    ) -> Self {
+        Self {
+            interval,
+            realn_params,
+            params,
+            src,
+        }
     }
 
     pub fn run<T>(&mut self, o: T, out: OutputWriter, refseq: RefSeqHandle)
@@ -47,6 +58,7 @@ impl PileupWorker {
             &self.src,
             refseq,
             &self.params,
+            &self.realn_params,
             o,
             OutputMethod::QueueForOutput(PileupOutputArray::new(
                 std::cmp::min((self.interval.len() / 10).max(1), OUTPUT_ARRAY_YIELD_SIZE) as usize,
@@ -64,6 +76,7 @@ pub type RefSeqHandle = Option<Arc<Vec<u8>>>;
 pub struct PileupEngine<T: OrderedPileupOutput> {
     intervals: Vec<GenomeInterval>,
     plp_params: PileupParams,
+    realn_params: RealignParams,
     src: BamDataSource,
     output: T,
     dest: OutputDataDest,
@@ -71,7 +84,12 @@ pub struct PileupEngine<T: OrderedPileupOutput> {
 }
 
 impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
-    pub fn initialize(in_params: InputParams, plp_params: PileupParams, output: T) -> Result<Self, Error> {
+    pub fn initialize(
+        in_params: InputParams,
+        plp_params: PileupParams,
+        realn_params: RealignParams,
+        output: T,
+    ) -> Result<Self, Error> {
         let src = BamDataSource::from_string(&in_params.file)?;
         let dest = OutputDataDest::from_string(&plp_params.output);
 
@@ -93,6 +111,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         Ok(Self {
             intervals,
             plp_params,
+            realn_params,
             src,
             output,
             dest,
@@ -144,6 +163,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 &self.src,
                 self.refseq.yield_handle(),
                 &self.plp_params,
+                &self.realn_params,
                 self.output.clone(),
                 OutputMethod::WriteDirectly(self.output.clone(), lock),
             )?;
@@ -199,7 +219,12 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
             threadpool.install(|| {
                 per_thread_intervals.par_iter().enumerate().for_each(|(i, chunk)| {
-                    let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
+                    let mut worker = PileupWorker::new(
+                        self.plp_params.clone(),
+                        self.realn_params.clone(),
+                        chunk.clone(),
+                        src.clone(),
+                    );
                     let writer = local_outputs.get_writer(i).expect("failed to get writer");
                     worker.run(self.output.clone(), writer, refhandle.clone());
                 });
