@@ -2,7 +2,7 @@ use std::{fs::OpenOptions, io::BufWriter};
 
 use crate::{alignment::PileupAlignment, bamio::OutputDataDest};
 
-pub type OutputWriter = BufWriter<Box<dyn std::io::Write>>;
+pub type OutputWriter = BufWriter<Box<dyn std::io::Write + Send>>;
 
 use anyhow::{Context, Error};
 
@@ -17,14 +17,16 @@ pub fn temp_fname(prefix: &str, suffix: &str, ext: &str) -> String {
 /// Get a writer to a particular destination. Lock specifies whether or not
 /// we expect the writer to be the sole writer the source (pertinent if writing to stdout).
 pub fn get_writer(handle: &OutputDataDest, writer_cap: usize, lock: bool, append: bool) -> Result<OutputWriter, Error> {
-    let dest: Box<dyn std::io::Write> = match handle {
+    let dest: Box<dyn std::io::Write + Send> = match handle {
         OutputDataDest::File(p) => {
             let mut o = OpenOptions::new();
-            Box::new(o.write(true).create(true).append(append).open(p)?)
+            let file = o.write(true).create(true).append(append).open(p)?;
+            file.lock()?;
+            Box::new(file)
         }
         OutputDataDest::Stdout => {
             if lock {
-                Box::new(std::io::stdout().lock())
+                Box::new(std::io::stdout())
             } else {
                 Box::new(std::io::stdout())
             }

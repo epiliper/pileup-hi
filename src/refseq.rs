@@ -4,10 +4,11 @@ use bio::io::{
     fasta::{FastaRead, Record},
 };
 use log::warn;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 struct FastaIndexedReader {
     inner: fasta::IndexedReader<File>,
@@ -17,22 +18,10 @@ struct FastaReader {
     inner: fasta::Reader<BufReader<File>>,
 }
 
-struct NoReader {}
-
-impl NoReader {
-    fn new() -> Self {
-        Self {}
-    }
-}
+pub type RefSeqHandle = Option<Arc<Vec<u8>>>;
 
 pub trait ReadsFasta {
     fn read_to_bytes(&mut self, refname: &str) -> Result<Option<Vec<u8>>, Error>;
-}
-
-impl ReadsFasta for NoReader {
-    fn read_to_bytes(&mut self, _refname: &str) -> Result<Option<Vec<u8>>, Error> {
-        Ok(None)
-    }
 }
 
 impl ReadsFasta for FastaIndexedReader {
@@ -59,65 +48,143 @@ impl ReadsFasta for FastaReader {
             if record.id() == refname {
                 return Ok(Some(record.seq().to_vec())); // found it
             } else if record.seq().is_empty() {
+                warn!("Unable to find ref {refname} in fasta. Proceeding without reference...");
                 return Ok(None); // read through all refs without finding one matching the given id
             }
         }
     }
 }
 
+//////////////////////////////////////////
+
+enum RefSeqSlotMarker {
+    // We've loaded this reference sequence before and freed it.
+    ReadBefore,
+
+    // A number of threads are currently using this reference sequence.
+    InUse(usize),
+}
+
+struct RefSeqSlot {
+    marker: RefSeqSlotMarker,
+    data: RefSeqHandle,
+}
+
+// Holds reference information requested by any number of processing threads, giving threads
+// read-only access to a reference on demand. Responsible for freeing unused references and loading
+// new ones.
 pub struct RefSeq {
-    reader: Box<dyn ReadsFasta>,
-    data: Option<Arc<Vec<u8>>>,
+    data: Arc<Mutex<HashMap<String, RefSeqSlot>>>,
 }
 
 impl RefSeq {
-    // TODO: use regular fasta reader to avoid using rust_bio
-    pub fn from_file(file: &str) -> Result<Self, Error> {
+    pub fn get_reader(file: &str) -> Result<Box<dyn ReadsFasta>, Error> {
+        // TODO: use regular fasta reader to avoid using rust_bio
         let idx_name = format! {"{file}.fai"};
         let faidx = Path::new(&idx_name);
 
-        if !faidx.exists() {
-            let reader = FastaReader {
+        let reader: Box<dyn ReadsFasta> = if !faidx.exists() {
+            Box::new(FastaReader {
                 inner: fasta::Reader::from_file(Path::new(&file))?,
-            };
-
-            Ok(Self {
-                reader: Box::new(reader),
-                data: None,
             })
         } else {
-            let reader = FastaIndexedReader {
+            Box::new(FastaIndexedReader {
                 inner: fasta::IndexedReader::from_file(&Path::new(&file))?,
-            };
-
-            Ok(Self {
-                reader: Box::new(reader),
-                data: None,
             })
-        }
-    }
-
-    pub fn blank() -> Self {
-        Self {
-            reader: Box::new(NoReader::new()),
-            data: None,
-        }
-    }
-
-    pub fn load_seq(&mut self, t_name: &str) -> Result<(), Error> {
-        self.data = if let Some(bytes) = self.reader.read_to_bytes(t_name)? {
-            Some(Arc::new(bytes))
-        } else {
-            None
         };
-        Ok(())
+        Ok(reader)
     }
 
-    pub fn yield_handle(&self) -> Option<Arc<Vec<u8>>> {
-        if let Some(ref refseq) = self.data {
-            Some(Arc::clone(refseq))
+    pub fn load_seq(file_name: &str, ref_name: &str) -> Result<RefSeqHandle, Error> {
+        let mut reader = RefSeq::get_reader(file_name)?;
+        let read = reader.read_to_bytes(ref_name)?;
+        if let Some(bytes) = read {
+            Ok(Some(Arc::new(bytes)))
         } else {
-            None
+            Ok(None)
+        }
+    }
+
+    pub fn new() -> Self {
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn lock_data(&self) -> MutexGuard<'_, HashMap<String, RefSeqSlot>> {
+        self.data
+            .lock()
+            .expect("failed to acquire mutex lock for reference data")
+    }
+
+    pub fn yield_refseq(&self, ref_name: &str) -> RefSeqHandle {
+        let lock = self.lock_data();
+
+        if let Some(slot) = lock.get(ref_name) {
+            if let Some(ref data) = slot.data {
+                return Some(Arc::clone(data));
+            }
+        }
+        None
+    }
+
+    pub fn yield_handle(&self, ref_name: &str, file_name: Option<&str>) -> Result<RefSeqHandle, Error> {
+        if let Some(fname) = file_name {
+            let mut lock = self.lock_data();
+
+            if let Some(slot) = lock.get_mut(ref_name) {
+                match slot.marker {
+                    RefSeqSlotMarker::ReadBefore => {
+                        warn!("Loading refseq {} freed previously...", ref_name);
+                        slot.marker = RefSeqSlotMarker::InUse(1);
+                        slot.data = RefSeq::load_seq(fname, ref_name)?;
+                    }
+
+                    RefSeqSlotMarker::InUse(ref mut x) => {
+                        *x += 1;
+                    }
+                }
+            } else {
+                // haven't loaded
+                lock.entry(ref_name.to_string()).insert_entry(RefSeqSlot {
+                    data: RefSeq::load_seq(fname, ref_name)?,
+                    marker: RefSeqSlotMarker::InUse(1),
+                });
+            }
+
+            drop(lock);
+            Ok(self.yield_refseq(ref_name))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn decrement_ref_usage(&self, ref_name: &str) {
+        let mut lock = self.lock_data();
+
+        if let Some(entry) = lock.get_mut(ref_name) {
+            match entry.marker {
+                RefSeqSlotMarker::ReadBefore => {
+                    panic!(
+                        "Attempted to decrement usage status of non-existent reference: {}",
+                        ref_name
+                    );
+                }
+                RefSeqSlotMarker::InUse(ref mut count) => {
+                    assert!(*count > 0);
+                    *count -= 1;
+
+                    if *count == 0 {
+                        entry.data = None; // free the genome bytes, no one's using them anymore.
+                        entry.marker = RefSeqSlotMarker::ReadBefore;
+                    }
+                }
+            }
+        } else {
+            panic!(
+                "Attempted to decrement usage status of non-existent reference: {}",
+                ref_name
+            );
         }
     }
 }

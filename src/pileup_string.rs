@@ -1,5 +1,6 @@
+use crate::alignment::PileupAlignment;
 use crate::output::OrderedPileupOutput;
-use crate::{alignment::PileupAlignment, engine::RefSeqHandle};
+use crate::refseq::RefSeqHandle;
 use anyhow::Error;
 use rust_htslib::bam::record::Cigar;
 use std::io::Write;

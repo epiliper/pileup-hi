@@ -2,13 +2,14 @@ use crate::{
     bamio::{BamDataSource, BamReader},
     baq::realign_record,
     cigar_resolve::resolve_cigar,
-    engine::{RefSeqHandle, MIN_BAM_READ_THREADS},
+    engine::MIN_BAM_READ_THREADS,
     output::{OrderedPileupOutput, OutputMethod},
     overlap::MapOverlaps,
     params::PileupParams,
     position_queue::GenomeInterval,
     read_buf::{BufPushResult, ReadBuffer},
     read_filter::ReadFilter,
+    refseq::RefSeqHandle,
     utils::read_ends_before_pos,
 };
 

@@ -1,7 +1,7 @@
 use crate::alignment::PileupAlignment;
 use crate::bamio::OutputDataDest;
-use crate::engine::{RefSeqHandle, BUFWRITER_CAP};
 use crate::utils::{get_writer, temp_fname, OutputWriter};
+use crate::{engine::BUFWRITER_CAP, refseq::RefSeqHandle};
 use anyhow::Error;
 use log::warn;
 use std::fs::File;

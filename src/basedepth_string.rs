@@ -1,4 +1,4 @@
-use crate::{alignment::PileupAlignment, engine::RefSeqHandle, output::OrderedPileupOutput};
+use crate::{alignment::PileupAlignment, output::OrderedPileupOutput, refseq::RefSeqHandle};
 use anyhow::Error;
 use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
