@@ -66,6 +66,12 @@ pub struct RefSeq {
     file: String,
 }
 
+// internally, reference sequences are held by atomic reference-counted pointers. If we don't have
+// any threads using the reference anymore, we free the bytes storing the sequence. This is only
+// really efficient at preventing constant re-loading when we make our threads process interval
+// jobs in reference-sorted order (which we do unless we are given a BED file or some other custom
+// list of intervals).
+
 impl RefSeq {
     pub fn get_reader(file: &str) -> Result<Box<dyn ReadsFasta>, Error> {
         // TODO: use regular fasta reader to avoid using rust_bio

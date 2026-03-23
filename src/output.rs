@@ -31,6 +31,7 @@ pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     fn new() -> Self;
 }
 
+/// A job a worker thread can accept. Contains temp output file handle, the interval to process, and a "done" state.
 pub struct IntervalJobInner {
     pub out: OutputDataDest,
     pub interval: GenomeInterval,
@@ -53,6 +54,7 @@ impl IntervalJobInner {
 
 pub type IntervalJob = Arc<IntervalJobInner>;
 
+/// Data structure storing tasks to send to threads. Each interval job (chunk) is mapped to the larger interval it was fragmented from. Once all chunks are completed, their respective temp files are copied into the main output file and deleted. Importantly, larger intervals are ORDERED.
 pub struct IntervalJobs {
     map: VecDeque<(GenomeInterval, Vec<IntervalJob>)>,
     pub queue: VecDeque<IntervalJob>,
@@ -128,6 +130,7 @@ impl IntervalJobs {
         self.map.is_empty()
     }
 
+    /// Check if we have any intervals with all chunks completed.
     pub fn merge_completed(&mut self) -> Result<(), Error> {
         let mut done = 0;
 
@@ -139,6 +142,8 @@ impl IntervalJobs {
             }
 
             assert!(done <= pending.len());
+
+            // all chunks have been marked "done" by their assigned workers
             if done == pending.len() {
                 info!("Finished ref {}", interval.name);
                 let (_, to_merge) = self.map.pop_front().unwrap();
@@ -149,6 +154,8 @@ impl IntervalJobs {
         Ok(())
     }
 
+    /// Should be called when we've done everything (e.g. self.is_completed()). Does one final merge
+    /// and signals the writer thread to finish.
     pub fn conclude(mut self) -> Result<(), Error> {
         self.merge_completed()?;
         drop(self.s);
@@ -157,6 +164,7 @@ impl IntervalJobs {
     }
 }
 
+/// Tell the program on unexpected exit (e.g. SIGTERM, ctrl-c) to delete all temp files it created and hasn't yet merged to final output
 pub fn setup_exit_handler() {
     ctrlc::set_handler(|| {
         warn!("Received termination signal. Cleaning up intermediate files...");
@@ -181,6 +189,8 @@ pub fn setup_exit_handler() {
     .expect("Failed to set exit handler")
 }
 
+/// A buffer of pileup output structs. Once its capacity is exceeded, it writes itself to its designed output file. Used to reduce system calls to file writing, though I haven't benchmarked
+/// without it.
 pub struct PileupOutputArray<T: OrderedPileupOutput> {
     data: Vec<T>,
     writable: Vec<bool>,

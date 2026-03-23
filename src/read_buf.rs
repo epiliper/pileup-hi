@@ -23,6 +23,10 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 /// pileup_iterator.rs.
 ///
 /// If you're wondering, using std::collections::VecDeque is signficantly slower in my experience.
+///
+/// NOTE: it's worth considering if maybe an intrusive linked list backed by a
+/// contiguously-allocated array might be better here. Could be worse or not yield any performance
+/// gains at all.
 pub struct ReadBuffer {
     pub rbuf: Vec<PileupAlignmentRef>,
     pub len: i64,

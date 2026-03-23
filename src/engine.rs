@@ -10,6 +10,10 @@ use crate::{
 
 use std::sync::{Arc, Condvar, Mutex};
 
+use anyhow::Error;
+use log::{info, warn};
+use std::io::BufWriter;
+
 const OUTPUT_ARRAY_YIELD_SIZE: i64 = 2000;
 pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
 pub const MIN_BAM_READ_THREADS: usize = 2;
@@ -19,16 +23,19 @@ pub const MIN_BAM_READ_THREADS: usize = 2;
 /// Can be overridden if you need more horsepower for, say, high-depth regions.
 pub const MIN_COORDS_PER_THREAD: i64 = 250_000;
 
-use anyhow::Error;
-use log::{info, warn};
-use std::io::BufWriter;
+////////////
+// THREADING
+////////////
 
+// A conditional variable that tracks the number of threads available to accept a genomic interval
+// job.
 pub struct ThreadSignal {
-    lock: Mutex<usize>,
-    cvar: Condvar,
+    lock: Mutex<usize>, // number of available threads
+    cvar: Condvar,      // what to ping when number of free threads changes
 }
 
 impl ThreadSignal {
+    // Wait until there is at least one available thread
     pub fn wait_while(&self) {
         std::mem::drop(
             self.cvar
@@ -37,11 +44,13 @@ impl ThreadSignal {
         )
     }
 
+    // Notify that a thread has started working and become unavailable
     pub fn mark_running(&self) {
         *self.lock.lock().unwrap() -= 1;
         self.cvar.notify_one();
     }
 
+    // Notify that a thread has finished its job and is now available
     pub fn mark_done(&self) {
         *self.lock.lock().unwrap() += 1;
         self.cvar.notify_one();
@@ -114,6 +123,7 @@ impl PileupWorker {
     }
 }
 
+/// Very simple abstraction over a collection of threads that can take jobs.
 pub struct ThreadPool {
     workers: Vec<PileupWorker>,
     notify: Arc<ThreadSignal>,
@@ -256,14 +266,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         Ok(())
     }
 
-    /// Use separate threads for processing and writing. Each processing thread owns its IO readers for input BAM, index, and any other files.
-    /// The problem with this: all threads block until the last per-ref thread finishes.
-    /// We need this to dynamically determinate how many chunks across ALL threads, dole out chunks
-    /// in order to threads, and make sure file manager respects order.
-    ///
-    /// Thoughts: we need to be finish as many parts of the same reference before moving on to the
-    /// next one. if we are processing eukaryotic genomes and have multiple chromosomes in memory, that
-    /// will get ugly very fast; better to have one or two in memory at a time.
+    /// Split up a list of input genomic intervals into smaller chunks to be processed in parallel. Chunks are first written to temporary output files before being merged into the user-specified output file.
     pub fn run_multi(self) -> Result<(), Error> {
         let main_writer = get_writer_multi(&self.dest, BUFWRITER_CAP, true, false)?;
 
