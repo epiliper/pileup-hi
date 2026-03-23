@@ -1,17 +1,15 @@
 use crate::alignment::PileupAlignment;
 use crate::bamio::OutputDataDest;
-use crate::utils::{get_writer, temp_fname, OutputWriter};
-use crate::{engine::BUFWRITER_CAP, refseq::RefSeqHandle};
+use crate::utils::{temp_fname, OutputWriter};
+use crate::{position_queue::GenomeInterval, refseq::RefSeqHandle};
 use anyhow::Error;
 use log::warn;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{BufReader, Write};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-pub static FILE_MERGE_SINGLETON: Mutex<OutputFileMerge> = Mutex::new(OutputFileMerge {
-    outfile: OutputDataDest::Stdout,
-    subfiles: vec![],
-});
+pub static FILE_MERGE_SINGLETON: Mutex<Vec<OutputDataDest>> = Mutex::new(vec![]);
 
 /// The interface requirements for a pileup output. It needs to give ref information,
 /// intake pileup alignments, update current ref info, display depth, and write itself.
@@ -32,19 +30,68 @@ pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     fn new() -> Self;
 }
 
-/// Used to keep track of our main output file and the subfiles we want to merge into it. Subfiles
-/// are ordered by thread ID.
-#[derive(Clone)]
-pub struct OutputFileMerge {
-    pub outfile: OutputDataDest,
-    pub subfiles: Vec<OutputDataDest>,
+pub struct IntervalJobInner {
+    pub out: OutputDataDest,
+    pub interval: GenomeInterval,
+    pub done: Mutex<bool>,
 }
 
-impl OutputFileMerge {
-    /// Copy the data in the subfiles over to the main file
-    pub fn merge<W: std::io::Write>(&self, mut dest: W) -> Result<(), Error> {
-        for s in &self.subfiles {
-            match s {
+impl IntervalJobInner {
+    fn new(interval: &GenomeInterval) -> Self {
+        Self {
+            out: OutputDataDest::from_string(&temp_fname(
+                &format!("{}:{}-{}", interval.name, interval.start, interval.end),
+                "",
+                ".temp",
+            )),
+            done: Mutex::new(false),
+            interval: interval.clone(),
+        }
+    }
+}
+
+pub type IntervalJob = Arc<IntervalJobInner>;
+
+pub struct IntervalJobs {
+    map: HashMap<GenomeInterval, Vec<IntervalJob>>,
+    pub queue: VecDeque<IntervalJob>,
+}
+
+impl IntervalJobs {
+    pub fn new(intervals: &[GenomeInterval], min_coords_per_thread: i64, threads: i64) -> Self {
+        let mut map: HashMap<GenomeInterval, Vec<IntervalJob>> = HashMap::new();
+        let mut queue: VecDeque<IntervalJob> = VecDeque::new();
+        let mut lock = FILE_MERGE_SINGLETON.lock().unwrap();
+
+        for interval in intervals {
+            let chunks = if interval.len() < min_coords_per_thread {
+                interval
+                    .chunks(min_coords_per_thread)
+                    .map(|c| Arc::new(IntervalJobInner::new(&c)))
+                    .collect::<Vec<IntervalJob>>()
+            } else {
+                interval
+                    .n_chunks(threads)
+                    .map(|c| Arc::new(IntervalJobInner::new(&c)))
+                    .collect::<Vec<IntervalJob>>()
+            };
+
+            chunks.iter().for_each(|c| {
+                queue.push_back(c.clone());
+                lock.push(c.out.clone());
+            });
+
+            map.insert(interval.clone(), chunks);
+        }
+
+        Self { map, queue }
+    }
+
+    fn merge<W: std::io::Write>(dest: &mut W, temps: Vec<IntervalJob>) -> Result<(), Error> {
+        assert!(!temps.is_empty());
+
+        for tmp in temps {
+            match tmp.out {
                 OutputDataDest::Stdout => anyhow::bail!("cannot merge from stdout! Critical error"),
                 OutputDataDest::File(ref f) => {
                     match File::open(f) {
@@ -57,7 +104,7 @@ impl OutputFileMerge {
 
                         Ok(f) => {
                             let mut reader = BufReader::with_capacity(2 * 1024 * 1024, f);
-                            std::io::copy(&mut reader, &mut dest)?;
+                            std::io::copy(&mut reader, dest)?;
                         }
                     }
                     if let Err(e) = std::fs::remove_file(f) {
@@ -73,49 +120,59 @@ impl OutputFileMerge {
         Ok(())
     }
 
-    /// Delete all files at once, useful if we abruptly exit
-    pub fn cleanup(&mut self) -> Result<(), Error> {
-        for s in &self.subfiles {
-            if let OutputDataDest::File(f) = s {
-                if let Err(e) = std::fs::remove_file(f) {
-                    match e.kind() {
-                        std::io::ErrorKind::NotFound => (),
-                        _ => anyhow::bail!(e),
-                    }
+    pub fn is_completed(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn merge_completed<W: std::io::Write>(&mut self, dest: &mut W) -> Result<(), Error> {
+        let mut out = vec![];
+        let mut to_remove = vec![];
+
+        for (k, v) in self.map.iter() {
+            let mut done = 0;
+
+            for tempfile in v.iter() {
+                if *tempfile.done.lock().unwrap() {
+                    done += 1;
                 }
+            }
+
+            assert!(done <= v.len());
+
+            if done == v.len() {
+                to_remove.push(k.clone());
             }
         }
 
-        Ok(())
-    }
+        for k in to_remove {
+            out.extend(self.map.remove(&k).unwrap());
+        }
 
-    /// If main thread, return the writer to the final output file
-    pub fn get_writer(&self, thread_idx: usize) -> Result<OutputWriter, Error> {
-        if thread_idx == 0 {
-            get_writer(&self.outfile, BUFWRITER_CAP, true, true)
+        if !out.is_empty() {
+            IntervalJobs::merge(dest, out)
         } else {
-            get_writer(&self.subfiles[thread_idx - 1], BUFWRITER_CAP, true, false)
+            Ok(())
         }
     }
-}
-
-pub fn generate_subfile_dests(outprefix: &str, n: usize, suffix: &str) -> Vec<OutputDataDest> {
-    let mut ret = Vec::with_capacity(n);
-    for i in 0..n {
-        let temp = temp_fname(outprefix, &i.to_string(), suffix);
-        ret.push(OutputDataDest::File(temp));
-    }
-
-    ret
 }
 
 pub fn setup_exit_handler() {
     ctrlc::set_handler(|| {
         warn!("Received termination signal. Cleaning up intermediate files...");
-        if let Ok(mut outputs) = FILE_MERGE_SINGLETON.lock() {
-            outputs
-                .cleanup()
-                .expect("Failed to cleanup temp files during termination sequence");
+        if let Ok(outputs) = FILE_MERGE_SINGLETON.lock() {
+            for t in outputs.iter() {
+                match t {
+                    OutputDataDest::Stdout => (),
+                    OutputDataDest::File(ref f) => {
+                        if let Err(e) = std::fs::remove_file(f) {
+                            match e.kind() {
+                                std::io::ErrorKind::NotFound => (),
+                                _ => eprintln!("{e}"),
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         std::process::exit(130);

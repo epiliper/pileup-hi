@@ -16,21 +16,23 @@ pub fn temp_fname(prefix: &str, suffix: &str, ext: &str) -> String {
 
 /// Get a writer to a particular destination. Lock specifies whether or not
 /// we expect the writer to be the sole writer the source (pertinent if writing to stdout).
-pub fn get_writer(handle: &OutputDataDest, writer_cap: usize, lock: bool, append: bool) -> Result<OutputWriter, Error> {
+pub fn get_writer_multi(
+    handle: &OutputDataDest,
+    writer_cap: usize,
+    lock: bool,
+    append: bool,
+) -> Result<OutputWriter, Error> {
     let dest: Box<dyn std::io::Write + Send> = match handle {
         OutputDataDest::File(p) => {
             let mut o = OpenOptions::new();
             let file = o.write(true).create(true).append(append).open(p)?;
-            file.lock()?;
+
+            if lock {
+                file.lock()?;
+            }
             Box::new(file)
         }
-        OutputDataDest::Stdout => {
-            if lock {
-                Box::new(std::io::stdout())
-            } else {
-                Box::new(std::io::stdout())
-            }
-        }
+        OutputDataDest::Stdout => Box::new(std::io::stdout()),
     };
 
     Ok(BufWriter::with_capacity(writer_cap, dest))

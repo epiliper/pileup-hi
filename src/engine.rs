@@ -1,19 +1,15 @@
 use crate::{
     bamio::{BamDataSource, BamReader, OutputDataDest},
-    output::{
-        generate_subfile_dests, OrderedPileupOutput, OutputFileMerge, OutputMethod, PileupOutputArray,
-        FILE_MERGE_SINGLETON,
-    },
+    output::{IntervalJob, IntervalJobs, OrderedPileupOutput, OutputMethod, PileupOutputArray},
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
     refseq::{RefSeq, RefSeqHandle},
-    utils::OutputWriter,
+    utils::{get_writer_multi, OutputWriter},
 };
 
-use std::collections::VecDeque;
+use log::debug;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
 
 const OUTPUT_ARRAY_YIELD_SIZE: i64 = 2000;
 pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
@@ -44,6 +40,7 @@ impl ThreadSignal {
 
     pub fn mark_running(&self) {
         *self.lock.lock().unwrap() -= 1;
+        self.cvar.notify_one();
     }
 
     pub fn mark_done(&self) {
@@ -53,39 +50,37 @@ impl ThreadSignal {
 }
 
 pub struct PileupWorker {
-    id: usize,
     jobid: usize,
     handle: Option<std::thread::JoinHandle<()>>,
     notify: Arc<ThreadSignal>,
 }
 
 impl PileupWorker {
-    pub fn new(id: usize, notify: Arc<ThreadSignal>) -> Self {
+    pub fn new(notify: Arc<ThreadSignal>) -> Self {
         Self {
-            id,
             jobid: 0,
             handle: None,
             notify,
         }
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.handle
-            .as_ref()
-            .and_then(|h| if h.is_finished() { Some(()) } else { None })
-            .is_some()
-    }
-
-    pub fn join(&mut self) {
-        assert!(self.is_finished() && self.handle.is_some());
-        self.handle.take().unwrap().join().unwrap();
+    fn is_finished(&mut self) -> bool {
+        if let Some(ref handle) = self.handle {
+            if handle.is_finished() {
+                self.handle.take().unwrap().join().unwrap();
+                return true;
+            } else {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn run<T>(
         &mut self,
         id: usize,
         params: PileupParams,
-        interval: GenomeInterval,
+        job: IntervalJob,
         src: BamDataSource,
         o: T,
         out: OutputWriter,
@@ -105,14 +100,16 @@ impl PileupWorker {
                 &params,
                 o,
                 OutputMethod::QueueForOutput(PileupOutputArray::new(
-                    std::cmp::min((interval.len() / 10).max(1), OUTPUT_ARRAY_YIELD_SIZE) as usize,
+                    std::cmp::min((job.interval.len() / 10).max(1), OUTPUT_ARRAY_YIELD_SIZE) as usize,
                     out,
                 )),
             )
             .unwrap();
 
-            iterator.auto_loop2(&interval).unwrap();
+            iterator.auto_loop2(&job.interval).unwrap();
 
+            // signal that we're done.
+            *job.done.lock().unwrap() = true;
             notify.mark_done();
         }));
     }
@@ -135,21 +132,21 @@ impl ThreadPool {
             workers: Vec::with_capacity(n_threads),
         };
 
-        (0..n_threads).for_each(|id| s.workers.push(PileupWorker::new(id, Arc::clone(&s.notify))));
+        (0..n_threads).for_each(|_| s.workers.push(PileupWorker::new(Arc::clone(&s.notify))));
 
         s
     }
 
-    pub fn get_available(&mut self) -> &mut PileupWorker {
+    pub fn get_available(&mut self) -> Option<&mut PileupWorker> {
         self.notify.wait_while();
 
         for worker in self.workers.iter_mut() {
             if worker.is_finished() {
-                worker.join();
-                return worker;
+                return Some(worker);
             }
         }
-        unreachable!();
+
+        None
     }
 }
 
@@ -240,7 +237,6 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             )?;
 
             iterator.auto_loop2(interval)?;
-            self.refseq.decrement_ref_usage(&interval.name);
         }
         Ok(())
     }
@@ -254,82 +250,44 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     /// next one. if we are processing eukaryotic genomes and have multiple chromosomes in memory, that
     /// will get ugly very fast; better to have one or two in memory at a time.
     pub fn run_multi(self) -> Result<(), Error> {
-        let outprefix = self.src.fname()?;
+        let mut jobs = IntervalJobs::new(
+            &self.intervals,
+            self.plp_params.coords_per_thread,
+            self.plp_params.threads as i64,
+        );
 
-        // create a list of all jobs based on input references and number of available threads.
-        // Note that this list is ordered, and is assumed to be so when merging output files.
-        let mut chunks = self
-            .intervals
-            .into_iter()
-            .flat_map(|i| {
-                if i.len() < self.plp_params.coords_per_thread {
-                    i.chunks(self.plp_params.coords_per_thread)
-                        .collect::<Vec<GenomeInterval>>()
-                } else {
-                    i.n_chunks(self.plp_params.threads as i64)
-                        .collect::<Vec<GenomeInterval>>()
-                }
-            })
-            .enumerate()
-            .collect::<VecDeque<(usize, GenomeInterval)>>();
+        let mut main_writer = get_writer_multi(&self.dest, BUFWRITER_CAP, true, false)?;
 
-        let mut output_merge_lock = FILE_MERGE_SINGLETON.lock().expect("Failed to lock output file mutex");
-        *output_merge_lock = OutputFileMerge {
-            outfile: self.dest.clone(),
-            subfiles: generate_subfile_dests(&outprefix, chunks.len() - 1, "temp.txt"),
-        };
-
-        // we use thread-local copy so we can drop the mutex lock
-        let local_outputs = output_merge_lock.clone();
-        drop(output_merge_lock);
-
-        let src = &self.src.clone();
         let mut pool = ThreadPool::new(self.plp_params.threads);
+        let mut n_jobs = 0;
 
-        while !chunks.is_empty() {
-            let worker = pool.get_available();
-            let (id, chunk) = chunks.pop_front().unwrap();
-            let refseq_handle = self
-                .refseq
-                .yield_handle(&chunk.name, self.plp_params.refseq.as_deref())?;
+        while !jobs.is_completed() {
+            jobs.merge_completed(&mut main_writer)?;
 
-            worker.run(
-                id,
-                self.plp_params.clone(),
-                chunk.clone(),
-                src.clone(),
-                self.output.clone(),
-                local_outputs.get_writer(id)?,
-                refseq_handle,
-            );
+            if let Some(worker) = pool.get_available() {
+                if let Some(job) = jobs.queue.pop_front() {
+                    n_jobs += 1;
+
+                    let refseq_handle = self
+                        .refseq
+                        .yield_handle(&job.interval.name, self.plp_params.refseq.as_deref())?;
+
+                    let writer = get_writer_multi(&job.out, BUFWRITER_CAP, true, false)?;
+
+                    worker.run(
+                        n_jobs,
+                        self.plp_params.clone(),
+                        job,
+                        self.src.clone(),
+                        self.output.clone(),
+                        writer,
+                        refseq_handle,
+                    );
+                }
+            }
         }
 
-        // threadpool.install(|| {
-        //     chunks.par_iter().enumerate().for_each(|(i, chunk)| {
-        //         let refhandle = self
-        //             .refseq
-        //             .yield_handle(&chunk.name, self.plp_params.refseq.as_deref())
-        //             .unwrap();
-
-        //         let before = Instant::now();
-        //         let mut worker = PileupWorker::new(self.plp_params.clone(), chunk.clone(), src.clone());
-        //         let writer = local_outputs.get_writer(i).expect("failed to get writer");
-        //         worker.run(self.output.clone(), writer, refhandle);
-
-        //         info!(
-        //             "Chunk {} / {} completed in {} seconds...",
-        //             i,
-        //             chunks.len(),
-        //             before.elapsed().as_secs()
-        //         );
-
-        //         self.refseq.decrement_ref_usage(&chunk.name);
-        //     });
-        // });
-
-        let main_writer = local_outputs.get_writer(0)?;
-        local_outputs.merge(main_writer)?;
-
+        jobs.merge_completed(&mut main_writer)?;
         Ok(())
     }
 }

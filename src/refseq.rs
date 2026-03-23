@@ -158,33 +158,4 @@ impl RefSeq {
             Ok(None)
         }
     }
-
-    pub fn decrement_ref_usage(&self, ref_name: &str) {
-        let mut lock = self.lock_data();
-
-        if let Some(entry) = lock.get_mut(ref_name) {
-            match entry.marker {
-                RefSeqSlotMarker::ReadBefore => {
-                    panic!(
-                        "Attempted to decrement usage status of non-existent reference: {}",
-                        ref_name
-                    );
-                }
-                RefSeqSlotMarker::InUse(ref mut count) => {
-                    assert!(*count > 0);
-                    *count -= 1;
-
-                    if *count == 0 {
-                        entry.data = None; // free the genome bytes, no one's using them anymore.
-                        entry.marker = RefSeqSlotMarker::ReadBefore;
-                    }
-                }
-            }
-        } else {
-            panic!(
-                "Attempted to decrement usage status of non-existent reference: {}",
-                ref_name
-            );
-        }
-    }
 }
