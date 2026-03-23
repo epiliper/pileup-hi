@@ -15,7 +15,7 @@ pub fn temp_fname(prefix: &str, suffix: &str, ext: &str) -> String {
 }
 
 /// Get a writer to a particular destination. Lock specifies whether or not
-/// we expect the writer to be the sole writer the source (pertinent if writing to stdout).
+/// we expect the writer to be the sole writer the source
 pub fn get_writer_multi(
     handle: &OutputDataDest,
     writer_cap: usize,

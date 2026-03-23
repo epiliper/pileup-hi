@@ -222,7 +222,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     /// Use a single thread for both processing and writing.
     pub fn run_single(self) -> Result<(), Error> {
         for interval in self.intervals.iter() {
-            let lock = Box::new(BufWriter::with_capacity(2 * 1024 * 1024, std::io::stdout().lock()));
+            let main_writer: Box<dyn std::io::Write> = match self.dest {
+                OutputDataDest::File(_) => Box::new(get_writer_multi(&self.dest, BUFWRITER_CAP, true, false)?),
+                OutputDataDest::Stdout => Box::new(BufWriter::with_capacity(BUFWRITER_CAP, std::io::stdout().lock())),
+            };
 
             let refseq_handle = self
                 .refseq
@@ -233,7 +236,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 refseq_handle,
                 &self.plp_params,
                 self.output.clone(),
-                OutputMethod::WriteDirectly(self.output.clone(), lock),
+                OutputMethod::WriteDirectly(self.output.clone(), main_writer),
             )?;
 
             iterator.auto_loop2(interval)?;
@@ -256,7 +259,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             self.plp_params.threads as i64,
         );
 
-        let mut main_writer = get_writer_multi(&self.dest, BUFWRITER_CAP, true, false)?;
+        let mut main_writer: Box<dyn std::io::Write> = match self.dest {
+            OutputDataDest::File(_) => Box::new(get_writer_multi(&self.dest, BUFWRITER_CAP, true, false)?),
+            OutputDataDest::Stdout => Box::new(BufWriter::with_capacity(BUFWRITER_CAP, std::io::stdout().lock())),
+        };
 
         let mut pool = ThreadPool::new(self.plp_params.threads);
         let mut n_jobs = 0;

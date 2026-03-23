@@ -53,35 +53,31 @@ impl IntervalJobInner {
 pub type IntervalJob = Arc<IntervalJobInner>;
 
 pub struct IntervalJobs {
-    map: HashMap<GenomeInterval, Vec<IntervalJob>>,
+    map: VecDeque<(GenomeInterval, Vec<IntervalJob>)>,
     pub queue: VecDeque<IntervalJob>,
 }
 
 impl IntervalJobs {
     pub fn new(intervals: &[GenomeInterval], min_coords_per_thread: i64, threads: i64) -> Self {
-        let mut map: HashMap<GenomeInterval, Vec<IntervalJob>> = HashMap::new();
+        let mut map: VecDeque<(GenomeInterval, Vec<IntervalJob>)> = VecDeque::new();
         let mut queue: VecDeque<IntervalJob> = VecDeque::new();
         let mut lock = FILE_MERGE_SINGLETON.lock().unwrap();
 
         for interval in intervals {
             let chunks = if interval.len() < min_coords_per_thread {
-                interval
-                    .chunks(min_coords_per_thread)
-                    .map(|c| Arc::new(IntervalJobInner::new(&c)))
-                    .collect::<Vec<IntervalJob>>()
+                interval.chunks(min_coords_per_thread)
             } else {
-                interval
-                    .n_chunks(threads)
-                    .map(|c| Arc::new(IntervalJobInner::new(&c)))
-                    .collect::<Vec<IntervalJob>>()
-            };
+                interval.n_chunks(threads)
+            }
+            .map(|c| Arc::new(IntervalJobInner::new(&c)))
+            .collect::<Vec<IntervalJob>>();
 
             chunks.iter().for_each(|c| {
                 queue.push_back(c.clone());
                 lock.push(c.out.clone());
             });
 
-            map.insert(interval.clone(), chunks);
+            map.push_back((interval.clone(), chunks.clone()));
         }
 
         Self { map, queue }
@@ -125,34 +121,23 @@ impl IntervalJobs {
     }
 
     pub fn merge_completed<W: std::io::Write>(&mut self, dest: &mut W) -> Result<(), Error> {
-        let mut out = vec![];
-        let mut to_remove = vec![];
+        let mut done = 0;
 
-        for (k, v) in self.map.iter() {
-            let mut done = 0;
-
-            for tempfile in v.iter() {
-                if *tempfile.done.lock().unwrap() {
+        if let Some((_tid, pending)) = self.map.front() {
+            for tmp in pending {
+                if *tmp.done.lock().unwrap() {
                     done += 1;
                 }
             }
 
-            assert!(done <= v.len());
-
-            if done == v.len() {
-                to_remove.push(k.clone());
+            assert!(done <= pending.len());
+            if done == pending.len() {
+                let (_, to_merge) = self.map.pop_front().unwrap();
+                IntervalJobs::merge(dest, to_merge)?;
             }
         }
 
-        for k in to_remove {
-            out.extend(self.map.remove(&k).unwrap());
-        }
-
-        if !out.is_empty() {
-            IntervalJobs::merge(dest, out)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
