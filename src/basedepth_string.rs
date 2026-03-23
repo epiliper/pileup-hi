@@ -213,7 +213,7 @@ impl BaseDepthString {
             let mut refbase;
 
             for i in 1..=del_len as usize {
-                refbase = if let Some(ref refseq) = refseq {
+                refbase = if let Some(refseq) = refseq.as_ref() {
                     refseq[self.pos as usize + i]
                 } else {
                     b'N'

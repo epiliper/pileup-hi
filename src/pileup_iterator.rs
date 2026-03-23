@@ -267,7 +267,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                 }
 
                 if self.realign {
-                    if let Some(ref refseq) = self.refseq {
+                    if let Some(refseq) = self.refseq.as_ref() {
                         let flag = if self.redo_baq { 7 } else { 3 };
                         realign_record(r, refseq, refseq.len() as i64, flag)?;
                     }

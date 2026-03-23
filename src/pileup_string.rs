@@ -69,7 +69,7 @@ impl PileupString {
         self.tid = tid;
         self.ref_pos = ref_pos;
 
-        self.ref_base = if let Some(seq) = ref_seq {
+        self.ref_base = if let Some(seq) = ref_seq.as_ref() {
             *seq.get(ref_pos as usize).unwrap_or(&b'N')
         } else {
             b'N'
@@ -280,7 +280,7 @@ pub fn write_plp(
     if del_len > 0 {
         write!(seq_buf, "{}", -del_len)?;
         for i in 1..=del_len as i64 {
-            refbase = if let Some(ref refseq) = refseq {
+            refbase = if let Some(refseq) = refseq.as_ref() {
                 refseq[(pos + i) as usize]
             } else {
                 b'N'

@@ -8,7 +8,6 @@ use crate::{
     utils::{get_writer_multi, OutputWriter},
 };
 
-use log::debug;
 use std::sync::{Arc, Condvar, Mutex};
 
 const OUTPUT_ARRAY_YIELD_SIZE: i64 = 2000;
@@ -156,7 +155,7 @@ pub struct PileupEngine<T: OrderedPileupOutput> {
     src: BamDataSource,
     output: T,
     dest: OutputDataDest,
-    refseq: RefSeq,
+    refseq: Option<RefSeq>,
 }
 
 impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
@@ -173,7 +172,14 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             intervals_from_header(header)?
         };
 
-        let refseq = RefSeq::new();
+        let refseq = if let Some(ref fasta) = plp_params.refseq {
+            if !std::fs::exists(std::path::Path::new(fasta))? {
+                anyhow::bail!("Fasta file provided ({}), doesn't exist!", fasta);
+            }
+            Some(RefSeq::new(fasta.clone()))
+        } else {
+            None
+        };
 
         Ok(Self {
             intervals,
@@ -219,6 +225,14 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         }
     }
 
+    fn get_refseq(&self, ref_name: &str) -> Result<RefSeqHandle, Error> {
+        if let Some(ref refseq) = self.refseq {
+            refseq.yield_handle(ref_name)
+        } else {
+            Ok(Arc::new(None))
+        }
+    }
+
     /// Use a single thread for both processing and writing.
     pub fn run_single(self) -> Result<(), Error> {
         for interval in self.intervals.iter() {
@@ -227,9 +241,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 OutputDataDest::Stdout => Box::new(BufWriter::with_capacity(BUFWRITER_CAP, std::io::stdout().lock())),
             };
 
-            let refseq_handle = self
-                .refseq
-                .yield_handle(&interval.name, self.plp_params.refseq.as_deref())?;
+            let refseq_handle = self.get_refseq(&interval.name)?;
 
             let mut iterator = PileupIterator::new(
                 &self.src,
@@ -272,9 +284,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 if let Some(job) = jobs.queue.pop_front() {
                     n_jobs += 1;
 
-                    let refseq_handle = self
-                        .refseq
-                        .yield_handle(&job.interval.name, self.plp_params.refseq.as_deref())?;
+                    let refseq_handle = self.get_refseq(&job.interval.name)?;
 
                     let writer = get_writer_multi(&job.out, BUFWRITER_CAP, true, false)?;
 
