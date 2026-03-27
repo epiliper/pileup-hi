@@ -6,36 +6,21 @@ use log::error;
 use rust_htslib::bam::Record;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-/// A container storing reads to be used in pileup generation. When requested to intake a
-/// read given a particular tid/coordinate, the buffer will check that the read overlaps with the
-/// coordinate and upon intake, perform overlap correction if enabled.
-///
-/// The ReadBuffer can be capped to hold a maximum amount of reads, tracked via the 'max_depth'
-/// field.
-///
-/// The buffer is actually a pair of alternating dynamically-resizing arrays: buffer 1 (Self::rbuf) is drained
-/// during pileup generation, and the items being drained and retained are added to buffer 2
-/// (Self::backup_buf). This way, we can 'remove' reads that no longer overlap with the queried
-/// position from the middle of the buffer without having to do a nasty left-shift of the entire
-/// array.
-///
-/// It is mandatory to call Self::reset() when draining the buffer. See generate_pileup() in
-/// pileup_iterator.rs.
-///
-/// If you're wondering, using std::collections::VecDeque is signficantly slower in my experience.
-///
-/// NOTE: it's worth considering if maybe an intrusive linked list backed by a
-/// contiguously-allocated array might be better here. Could be worse or not yield any performance
-/// gains at all.
+pub enum ReadBufferEntry {
+    Occupied(PileupAlignmentRef),
+    Tombstone,
+}
+
 pub struct ReadBuffer {
-    pub rbuf: Vec<PileupAlignmentRef>,
-    pub len: i64,
-    pub backup_buf: Vec<PileupAlignmentRef>,
+    pub rbuf: Vec<ReadBufferEntry>,
+    pub pending_del_indexes: RefCell<Vec<usize>>,
+    pub n_tombstones: usize,
     pub overlap_map: Option<OverlapMap>,
     pub depth: usize,
     pub max_depth: usize,
     pub head: BufferBoundary,
     pub tail: BufferBoundary,
+    pub len: i64,
 }
 
 pub struct BufferBoundary {
@@ -104,11 +89,10 @@ impl ReadBuffer {
             self.tail.set_to_rec(r);
         }
 
-        self.rbuf.push(Rc::clone(&plp_ref));
+        self.rbuf.push(ReadBufferEntry::Occupied(Rc::clone(&plp_ref)));
         self.depth += 1;
     }
 
-    #[inline(always)]
     /// Attempt to add a read to the buffer for pending pileup generation. This is similar to
     /// bam_plp_push() from htslib.
     ///
@@ -119,6 +103,7 @@ impl ReadBuffer {
     /// 3. there is room in the buffer (dictated by Self::max_depth)
     ///
     /// Notably, reads found to be in a new reference are still added.
+    #[inline(always)]
     pub fn attempt_push(&mut self, tid: i32, pos: i64, r: &Record) -> Result<BufPushResult, Error> {
         if r.is_unmapped() {
             if let Some(ref mut ov) = self.overlap_map {
@@ -185,8 +170,7 @@ impl ReadBuffer {
 
     /// Create a new read buffer, with optional overlap map if disable_overlaps == false
     pub fn new(depth: usize, disable_overlaps: bool) -> Self {
-        let rbuf: Vec<PileupAlignmentRef> = Vec::with_capacity(500);
-        let backup_buf: Vec<PileupAlignmentRef> = Vec::with_capacity(500);
+        let rbuf: Vec<ReadBufferEntry> = Vec::with_capacity(500);
 
         let max_depth = if depth.cmp(&0).is_eq() { usize::MAX } else { depth };
         let len = 0;
@@ -199,25 +183,99 @@ impl ReadBuffer {
             true => None,
         };
 
+        let pending_del_indexes = RefCell::new(Vec::with_capacity(500));
+
         Self {
             rbuf,
-            backup_buf,
             overlap_map,
+            pending_del_indexes,
             len,
             depth: 0,
+            n_tombstones: 0,
             max_depth,
             head,
             tail,
         }
     }
 
-    /// Prepare the buffer for the next round of pileup generation.
+    fn first(&self) -> Option<PileupAlignmentRef> {
+        for entry in self.rbuf.iter() {
+            match entry {
+                ReadBufferEntry::Tombstone => continue,
+
+                ReadBufferEntry::Occupied(plp) => {
+                    return Some(Rc::clone(plp));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn last(&self) -> Option<PileupAlignmentRef> {
+        for entry in self.rbuf.iter().rev() {
+            match entry {
+                ReadBufferEntry::Tombstone => continue,
+
+                ReadBufferEntry::Occupied(plp) => {
+                    return Some(Rc::clone(plp));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn remove_tombstones(&mut self) {
+        let mut dest = Vec::with_capacity(self.rbuf.capacity());
+
+        for entry in self.rbuf.drain(..) {
+            match entry {
+                ReadBufferEntry::Occupied(plp) => dest.push(ReadBufferEntry::Occupied(plp)),
+                ReadBufferEntry::Tombstone => (),
+            }
+        }
+
+        self.n_tombstones = 0;
+        self.rbuf = dest;
+    }
+
+    pub fn remove(&self, index: usize) {
+        self.pending_del_indexes.borrow_mut().push(index);
+    }
+
     pub fn reset(&mut self) {
-        assert!(self.rbuf.is_empty());
-        std::mem::swap(&mut self.rbuf, &mut self.backup_buf);
+        {
+            let mut indexes = self.pending_del_indexes.borrow_mut();
+
+            for idx in indexes.drain(..) {
+                let entry = self.rbuf.get_mut(idx).expect("Bad buffer removal index");
+                match entry {
+                    ReadBufferEntry::Tombstone => panic!("Attempted to delete tombstone in buffer"),
+                    ReadBufferEntry::Occupied(plp) => {
+                        self.n_tombstones += 1;
+                        self.depth -= 1;
+
+                        if let Some(ref mut overlap) = self.overlap_map {
+                            overlap.delete_read(&plp.borrow().rec);
+                        }
+
+                        *entry = ReadBufferEntry::Tombstone;
+                    }
+                }
+            }
+
+            assert!(indexes.is_empty());
+        }
+
+        if self.n_tombstones >= ((self.rbuf.len() as f32) * 0.77) as usize {
+            self.remove_tombstones();
+            assert!(self.n_tombstones == 0);
+        }
+
         if self.depth > 0 {
-            self.head.set_to_rec(&self.rbuf[0].borrow().rec);
-            self.tail.set_to_rec(&self.rbuf.last().unwrap().borrow().rec);
+            self.head.set_to_rec(&self.first().unwrap().borrow().rec);
+            self.tail.set_to_rec(&self.last().unwrap().borrow().rec);
         } else {
             self.head = BufferBoundary::new();
             self.tail = BufferBoundary::new();

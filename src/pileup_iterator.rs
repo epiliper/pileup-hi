@@ -4,10 +4,9 @@ use crate::{
     cigar_resolve::resolve_cigar,
     engine::MIN_BAM_READ_THREADS,
     output::{OrderedPileupOutput, OutputFormat},
-    overlap::MapOverlaps,
     params::PileupParams,
     position_queue::GenomeInterval,
-    read_buf::{BufPushResult, ReadBuffer},
+    read_buf::{BufPushResult, ReadBuffer, ReadBufferEntry},
     read_filter::ReadFilter,
     refseq::RefSeqHandle,
     utils::read_ends_before_pos,
@@ -120,7 +119,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     /// overlapping the query position are removed.
     #[inline(always)]
     pub fn set_pileup(&mut self) -> Result<(), Error> {
-        assert!(self.rbuf.backup_buf.is_empty());
+        // assert!(self.rbuf.backup_buf.is_empty());
         let mut skip = false;
 
         // don't bother going through read buffer if it starts beyond the
@@ -392,34 +391,28 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
     tid: i32,
     min_baseq: u8,
 ) -> Result<bool, Error> {
-    let mut skip_remainder_of_buf = false;
     let mut generated = false;
+    let mut plp;
 
-    for raw in rbuf.rbuf.drain(..) {
-        // from a previous record, we decided to skip all remaining records in this buffer.
-        if skip_remainder_of_buf {
-            rbuf.backup_buf.push(raw);
-            continue;
+    for (idx, raw) in rbuf.rbuf.iter().enumerate() {
+        match raw {
+            ReadBufferEntry::Tombstone => continue,
+            ReadBufferEntry::Occupied(_plp) => plp = _plp,
         }
 
-        let mut r = raw.borrow_mut();
+        let mut r = plp.borrow_mut();
 
         // record starts beyond position, which means that the remainder of the buffer does
         // too. Skip the rest of the records.
         if r.rec.tid() > tid || (r.rec.pos() > pos && r.rec.tid() == tid) {
             drop(r);
-            rbuf.backup_buf.push(raw);
-            skip_remainder_of_buf = true;
-            continue;
+            break;
         }
 
         // record is old and no longer overlaps the query coordinate. We discard it by not adding
         // it to the alternate buffer.
         if read_ends_before_pos(&r, pos) || r.rec.tid() < tid {
-            rbuf.depth -= 1;
-            if let Some(ref mut overlap) = rbuf.overlap_map {
-                overlap.delete_read(&r.rec);
-            }
+            rbuf.remove(idx);
             continue;
         }
 
@@ -431,14 +424,14 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
 
         if qual < min_baseq {
             drop(r);
-            rbuf.backup_buf.push(raw);
+            // rbuf.backup_buf.push(raw);
             continue;
         }
 
         out.intake(&r, refseq)?;
 
         drop(r);
-        rbuf.backup_buf.push(raw);
+        // rbuf.backup_buf.push(raw);
     }
 
     rbuf.reset();
