@@ -3,6 +3,7 @@ use crate::{
     baq::realign_record,
     cigar_resolve::resolve_cigar,
     engine::MIN_BAM_READ_THREADS,
+    errors::{Error, ErrorKind},
     output::{OrderedPileupOutput, OutputFormat},
     params::PileupParams,
     position_queue::GenomeInterval,
@@ -12,7 +13,6 @@ use crate::{
     utils::read_ends_before_pos,
 };
 
-use anyhow::Error;
 use rust_htslib::bam::Record;
 
 #[derive(Clone)]
@@ -199,7 +199,11 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     /// Update iterator state and prepare ref-specific data given a new interval.
     fn set_ref(&mut self, interval: GenomeInterval) -> Result<(), Error> {
         if interval.tid >= self.reader.header.target_count() as i64 {
-            anyhow::bail!("Interval has TID exceeding header maximum!");
+            return Err(Error::from(ErrorKind::AnomalousData(format!(
+                "Interval has a reference index ({}) exceeding header maximum ({})",
+                interval.tid,
+                self.reader.header.target_count()
+            ))));
         }
 
         let output = self.dest.cur();
@@ -222,10 +226,6 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         self.next_tid = self.tid;
 
         self.max_pos = interval.end - 1;
-
-        // if let Some(refseq) = &mut self.refseq {
-        //     refseq.load_seq(&self.reader.cur_ref)?;
-        // }
 
         Ok(())
     }
@@ -419,7 +419,7 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
         generated = true;
 
         // advance to the current ref position in read and record cigar op
-        resolve_cigar(&mut r, pos);
+        resolve_cigar(&mut r, pos)?;
         let qual = *r.rec.qual().get(r.qpos).unwrap_or(&0);
 
         if qual < min_baseq {

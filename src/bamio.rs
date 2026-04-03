@@ -1,6 +1,6 @@
 use crate::{params::STDOUT_ARG_STR, utils::has_index};
 
-use anyhow::{Context, Error};
+use crate::errors::{Error, ErrorKind};
 use rust_htslib::bam::{HeaderView, IndexedReader, Read, Reader, Record};
 use std::path;
 
@@ -21,7 +21,7 @@ pub enum OutputDataDest {
 impl BamDataSource {
     pub fn has_index(&self) -> Result<bool, Error> {
         match self {
-            Self::File(f) => has_index(f.to_str().unwrap()),
+            Self::File(f) => has_index(f.to_str().unwrap_or("")),
             Self::Stdin => Ok(false),
         }
     }
@@ -30,7 +30,7 @@ impl BamDataSource {
     pub fn fname(&self) -> Result<String, Error> {
         match self {
             Self::File(f) => {
-                let full = f.to_str().context("Unable to get file string")?;
+                let full = f.to_str().unwrap_or("");
                 if let Some((fname, _)) = full.rsplit_once(".") {
                     Ok(fname.to_string())
                 } else {
@@ -50,7 +50,10 @@ impl BamDataSource {
         } else if path::Path::exists(path::Path::new(s)) {
             Ok(Self::File(path::PathBuf::from(s)))
         } else {
-            anyhow::bail!("Input path {} not found!", s)
+            Err(Error::from(ErrorKind::IOError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "BAM not found",
+            ))))
         }
     }
 }
@@ -58,7 +61,7 @@ impl BamDataSource {
 impl std::fmt::Display for BamDataSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::File(f) => f.to_str().unwrap_or("FILE"),
+            Self::File(f) => f.to_str().unwrap_or("FILE NAME INVALID (character encoding?)"),
             Self::Stdin => "STDIN",
         })
     }
@@ -141,7 +144,7 @@ impl BamReader {
         }
 
         if nsampled == 0 {
-            anyhow::bail!("Unable to find reads for input file. Does the file have reads?")
+            Ok(0)
         } else {
             Ok(totallen / nsampled)
         }
@@ -207,14 +210,14 @@ impl BamRead for Reader {
     }
 
     fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>> {
-        self.read(stored_read).map(|e| e.context("Failed to retrieve read"))
+        self.read(stored_read).map(|res| res.map_err(Error::from))
     }
 }
 
 // Indexed Bam Reader
 impl BamRead for IndexedReader {
     fn init_to_ref(&mut self, tid: u32, start: i64, end: i64) -> Result<(), Error> {
-        self.fetch((tid, start, end)).context("Failed to fetch")
+        self.fetch((tid, start, end)).map_err(Error::from)
     }
 
     fn get_header(&self) -> &HeaderView {
@@ -230,8 +233,12 @@ impl BamRead for IndexedReader {
             BamDataSource::File(f) => {
                 ret = Self::from_path(f)?;
             }
+
             BamDataSource::Stdin => {
-                anyhow::bail!("Attempted to create indexed reader from stdout!")
+                return Err(Error::from(ErrorKind::IOError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidFilename,
+                    "Attemtped to create an indexed reader for STDIN",
+                ))));
             }
         }
         ret.set_threads(threads)?;
@@ -239,6 +246,6 @@ impl BamRead for IndexedReader {
     }
 
     fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>> {
-        self.read(stored_read).map(|e| e.context("Failed to retrieve read"))
+        self.read(stored_read).map(|res| res.map_err(Error::from))
     }
 }

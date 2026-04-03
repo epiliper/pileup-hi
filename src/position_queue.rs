@@ -1,7 +1,6 @@
-use std::ops::Not;
-
-use anyhow::{bail, Context, Error};
+use crate::errors::{Error, ErrorKind};
 use rust_htslib::bam::HeaderView;
+use std::ops::Not;
 
 /// A raw pileup region not yet validated to actually exist in a BAM header.
 pub struct RawPileupRegion {
@@ -127,19 +126,24 @@ fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
             start: 0,
             end: i64::MAX,
         }),
-        Some((None, _)) => bail!("Invalid region string {s}: ref name must come before ':'"),
+        Some((None, _)) => Err(Error::from(ErrorKind::BadInputRegions(format!(
+            "Invalid region string {s}: ref name must come before ':'"
+        )))),
 
-        Some((Some(_), None)) => {
-            bail!("Invalid region string {s}: coordinates must come after ':'")
-        }
+        Some((Some(_), None)) => Err(Error::from(ErrorKind::BadInputRegions(format!(
+            "Invalid region string {s}: coordinates must come after ':'"
+        )))),
 
         // parse coordinates
         Some((Some(ref_str), Some(pos_str))) => match split_check_ends(pos_str, '-') {
             None => {
                 // no dashes, meaning we expect a one-coordinate interval: e.g. Chr1:400
                 let pos = pos_str.replace(",", "").parse::<i64>()?;
+
                 if pos < 0 {
-                    bail!("Cannot have negative pos {pos}: {s}")
+                    return Err(Error::from(ErrorKind::BadInputRegions(format!(
+                        "Cannot have negative pos {pos}: {s}"
+                    ))));
                 };
 
                 Ok(RawPileupRegion {
@@ -148,8 +152,14 @@ fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
                     end: i64::MAX,
                 })
             }
-            Some((None, _)) => bail!("Invalid region string {s}: must have start coordinate before '-'"),
-            Some((Some(_), None)) => bail!("Invalid region string {s}: must have end coordinate after '-'"),
+
+            Some((None, _)) => Err(Error::from(ErrorKind::BadInputRegions(format!(
+                "Invalid region string {s}: must have start coordinate before '-'"
+            )))),
+
+            Some((Some(_), None)) => Err(Error::from(ErrorKind::BadInputRegions(format!(
+                "Invalid region string {s}: must have end coordinate after '-'"
+            )))),
 
             // We have something before and after a dash, so we expect numbers on both sides...
             Some((Some(start), Some(end))) => {
@@ -157,13 +167,19 @@ fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
                 let end_pos = end.replace(",", "").parse::<i64>()?;
 
                 if start_pos < 0 {
-                    bail!("cannot have negative start pos {start_pos}: {s}")
+                    return Err(Error::from(ErrorKind::BadInputRegions(format!(
+                        "Invalid region string {s}: cannot have negative start pos: {start_pos}"
+                    ))));
                 };
                 if end_pos < 0 {
-                    bail!("cannot have negative end pos {end_pos}: {s}")
+                    return Err(Error::from(ErrorKind::BadInputRegions(format!(
+                        "Invalid region string {s}: cannot have negative end pos: {end_pos}"
+                    ))));
                 };
                 if end_pos < start_pos {
-                    bail!("Cannot have end pos ({end_pos}) be smaller than start pos ({start_pos})")
+                    return Err(Error::from(ErrorKind::BadInputRegions(format!(
+                        "Invalid region string {s}: cannot have start end pos ({end_pos}) be smaller than start pos ({start_pos})"
+                    ))));
                 };
 
                 Ok(RawPileupRegion {
@@ -191,14 +207,16 @@ pub fn intervals_from_header(header: &HeaderView) -> Result<Vec<GenomeInterval>,
     let mut queue = Vec::new();
 
     for tid in 0..header.target_count() {
-        let end = header.target_len(tid).context("Unable to get target len")?.try_into()?;
+        let end = header
+            .target_len(tid)
+            .ok_or(Error::from(ErrorKind::AnomalousData(format!(
+                "Faulty BAM header: unable to find target len for ref ID {tid}"
+            ))))? as i64;
 
         let name = header.tid2name(tid);
 
         let reg = GenomeInterval {
-            name: std::str::from_utf8(name)
-                .context("Unable to parse region name")?
-                .to_string(),
+            name: std::str::from_utf8(name)?.to_string(),
 
             tid: i64::from(tid),
             start: 0,
@@ -218,7 +236,9 @@ pub fn intervals_from_regions(
     regions: Vec<RawPileupRegion>,
 ) -> Result<Vec<GenomeInterval>, Error> {
     if regions.is_empty() {
-        anyhow::bail!("Cannot supply empty regions list to PositionQueue builder!");
+        return Err(Error::from(ErrorKind::AnomalousData(
+            "List of BAM regions is empty!".to_string(),
+        )));
     }
 
     let tnames: Vec<&str> = header
@@ -234,8 +254,10 @@ pub fn intervals_from_regions(
         for (tid, canonname) in tnames.iter().enumerate() {
             if rawreg.name == *canonname {
                 let canonlen = header
-                    .target_len(u32::try_from(tid)?)
-                    .context("Unable to get ref len")?;
+                    .target_len(tid as u32)
+                    .ok_or(Error::from(ErrorKind::AnomalousData(format!(
+                        "Faulty BAM header: unable to find target len for ref ID {tid}"
+                    ))))?;
 
                 let end = if rawreg.end > canonlen as i64 {
                     canonlen as i64
@@ -255,7 +277,10 @@ pub fn intervals_from_regions(
         }
 
         if !found {
-            anyhow::bail!("Unable to find reference {} in header!", rawreg.name);
+            return Err(Error::from(ErrorKind::AnomalousData(format!(
+                "Couldn't find region name {} in BAM header",
+                rawreg.name
+            ))));
         }
     }
 

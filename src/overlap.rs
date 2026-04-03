@@ -1,5 +1,5 @@
 use crate::alignment::PileupAlignment;
-use anyhow::Error;
+use crate::errors::{Error, ErrorKind};
 use rust_htslib::bam::Record;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -13,7 +13,8 @@ pub fn tweak_overlap_qual(a: &mut Record, b: &mut Record) -> Result<(), Error> {
     unsafe {
         let ret = tweak_overlap_quality(a.inner_mut() as *mut _, b.inner_mut() as *mut _);
         if ret < 0 {
-            anyhow::bail!("Failed to adjust read overlap quality!")
+            let qname = std::str::from_utf8(a.qname())?;
+            return Err(Error::from(ErrorKind::MateOverlapFailed(qname.to_string())));
         }
     }
     Ok(())

@@ -1,4 +1,4 @@
-use anyhow::Error;
+use crate::errors::{Error, ErrorKind};
 use bio::io::{
     fasta,
     fasta::{FastaRead, Record},
@@ -80,11 +80,18 @@ impl RefSeq {
 
         let reader: Box<dyn ReadsFasta> = if !faidx.exists() {
             Box::new(FastaReader {
-                inner: fasta::Reader::from_file(Path::new(&file))?,
+                inner: fasta::Reader::from_file(Path::new(&file)).map_err(|e| {
+                    Error::from_generic(e.into(), ErrorKind::RefSeqError("Failed to create FASTA reader"))
+                })?,
             })
         } else {
             Box::new(FastaIndexedReader {
-                inner: fasta::IndexedReader::from_file(&Path::new(&file))?,
+                inner: fasta::IndexedReader::from_file(&Path::new(&file)).map_err(|e| {
+                    Error::from_generic(
+                        e.into(),
+                        ErrorKind::RefSeqError("Failed to create indexed FASTA reader"),
+                    )
+                })?,
             })
         };
         Ok(reader)

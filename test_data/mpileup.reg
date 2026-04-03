@@ -117,7 +117,7 @@ P 39.out pileuphi plp -t 1 -x -r 17:4000-4010 mpileup.1.$fmt
 # P 46.out $samtools view -h mpileup.1.bam | $samtools mpileup -x --ff 0x714 -
 
 # # -d; depth
-P 47.out $samtools mpileup -x -d 8500 -B -f mpileup.ref.fa deep.sam|$awk '{print $4}'
+P 47.out pileuphi plp -x -d 8500 -B -f mpileup.ref.fa deep.sam|$awk '{print $4}'
 
 # # Pileup output options; -s/O
 # P 76.out $samtools mpileup -Q0 -s -x -f mpileup.ref.fa mpileup.1.bam

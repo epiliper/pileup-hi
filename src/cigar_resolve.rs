@@ -1,11 +1,12 @@
 use crate::alignment::{PileupAlignment, CIGAR_STATE_UNINIT};
+use crate::errors::{Error, ErrorKind};
 use rust_htslib::bam::record::Cigar;
 
 #[inline(always)]
 /// This is a port of htslib's cigar_resolver2 from sam.c. I didn't try to reinvent the wheel by
 /// implementing it in highly-idiomatic Rust; the algorithm is delicate enough as is. Shouldn't be
 /// changed unless you have a very good reason.
-pub fn resolve_cigar(plp: &mut PileupAlignment, pos: i64) {
+pub fn resolve_cigar(plp: &mut PileupAlignment, pos: i64) -> Result<(), Error> {
     let cs = &mut plp.cstate;
     let cig = &cs.cig;
     let ncig = cig.len();
@@ -200,10 +201,14 @@ pub fn resolve_cigar(plp: &mut PileupAlignment, pos: i64) {
             plp.qpos = cs.iseq;
         }
 
-        _ => panic!("CIGAR_RESOLVE bad loop"),
+        _ => {
+            let qname = std::str::from_utf8(plp.rec.qname())?;
+            return Err(Error::from(ErrorKind::CigarResolutionFailed(qname.to_string())));
+        }
     }
 
     plp.cigar_index = plp.cstate.icig;
     plp.head = pos == plp.rec.pos();
     plp.tail = pos == plp.rec.pos() + plp.cstate.read_len_from_cigar - 1;
+    Ok(())
 }

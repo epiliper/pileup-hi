@@ -1,8 +1,7 @@
 use crate::alignment::{cigar2rlen, CigarState, PileupAlignment, PileupAlignmentRef, CIGAR_STATE_UNINIT};
 use crate::cigar_resolve::resolve_cigar;
+use crate::errors::{Error, ErrorKind};
 use crate::overlap::{MapOverlaps, OverlapMap};
-use anyhow::Error;
-use log::error;
 use rust_htslib::bam::Record;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -54,7 +53,7 @@ impl ReadBuffer {
     #[inline(always)]
     /// Store the read we've decided to push in the buffer, wrapping it in an Rc pointer and
     /// performing mate overlap-correction if requested by caller.
-    pub fn store(&mut self, r: &Record, read_len_from_cigar: i64, pos: i64) {
+    pub fn store(&mut self, r: &Record, read_len_from_cigar: i64, pos: i64) -> Result<(), Error> {
         let cstate = CigarState {
             cig: r.cigar(),
             icig: CIGAR_STATE_UNINIT,
@@ -74,7 +73,7 @@ impl ReadBuffer {
         // stale.
         if plp.rec.pos() < pos && plp.rec.tid() == self.tail.tid {
             for i in plp.rec.pos()..pos {
-                resolve_cigar(&mut plp, i);
+                resolve_cigar(&mut plp, i)?;
             }
         }
 
@@ -91,6 +90,7 @@ impl ReadBuffer {
 
         self.rbuf.push(ReadBufferEntry::Occupied(Rc::clone(&plp_ref)));
         self.depth += 1;
+        Ok(())
     }
 
     /// Attempt to add a read to the buffer for pending pileup generation. This is similar to
@@ -115,24 +115,11 @@ impl ReadBuffer {
 
         // check for unsorted input
         if r.tid() < self.tail.tid {
-            error!(
-                "File unsorted by reference: tid {} comes after tid {}. Read name: {}",
-                r.tid(),
-                self.tail.tid,
-                std::str::from_utf8(r.qname()).unwrap()
-            );
-
-            anyhow::bail!("Unsorted");
+            return Err(Error::from(ErrorKind::BamNotSortedByReference(self.tail.tid, r.tid())));
         }
 
-        if r.pos() < self.tail.pos && self.tail.tid == r.tid() {
-            error!(
-                "File unsorted by coordinate: pos {} comes after pos {}. Read name: {}",
-                r.pos(),
-                self.tail.pos,
-                std::str::from_utf8(r.qname()).unwrap()
-            );
-            anyhow::bail!("Unsorted");
+        if r.pos() < self.tail.pos {
+            return Err(Error::from(ErrorKind::BamNotSortedByCoordinate(self.tail.pos, r.pos())));
         }
 
         let read_len_from_cigar = cigar2rlen(r);
@@ -149,7 +136,7 @@ impl ReadBuffer {
         }
 
         if r.tid() != tid {
-            self.store(r, read_len_from_cigar, pos);
+            self.store(r, read_len_from_cigar, pos)?;
             return Ok(BufPushResult::DifferentReference);
         }
 
@@ -164,7 +151,7 @@ impl ReadBuffer {
             return Ok(BufPushResult::BeforePos);
         }
 
-        self.store(r, read_len_from_cigar, pos);
+        self.store(r, read_len_from_cigar, pos)?;
         Ok(BufPushResult::Pushed)
     }
 

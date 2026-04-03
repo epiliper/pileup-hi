@@ -9,7 +9,7 @@ use crate::{
     pileup_string::PileupString,
 };
 
-use anyhow::Error;
+use crate::errors::Error;
 use log::error;
 
 #[cfg(debug_assertions)]
@@ -21,6 +21,7 @@ mod baq;
 mod basedepth_string;
 mod cigar_resolve;
 mod engine;
+mod errors;
 mod output;
 mod overlap;
 mod params;

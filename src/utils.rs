@@ -4,7 +4,7 @@ use crate::{alignment::PileupAlignment, bamio::OutputDataDest};
 
 pub type OutputWriter = BufWriter<Box<dyn std::io::Write>>;
 
-use anyhow::{Context, Error};
+use crate::errors::Error;
 
 pub fn read_ends_before_pos(a: &PileupAlignment, pos: i64) -> bool {
     a.rec.pos() + a.cstate.read_len_from_cigar - 1 < pos
@@ -48,6 +48,5 @@ pub fn get_writer_multi(
 pub fn has_index(bam_file: &str) -> Result<bool, Error> {
     let potential_index = format! {"{bam_file}.bai"};
 
-    std::fs::exists(&potential_index)
-        .with_context(|| format!("Unable to check directory for file {}", &potential_index))
+    std::fs::exists(&potential_index).map_err(Error::from)
 }

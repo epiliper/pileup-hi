@@ -1,4 +1,4 @@
-use anyhow::Error;
+use crate::errors::{Error, ErrorKind};
 use rust_htslib::bam::Record;
 
 const BAM_FPAIRED: u16 = 1;
@@ -34,7 +34,9 @@ fn add_to_flag(flags: Vec<&str>, flag: &mut u16) -> Result<(), Error> {
             "BAM_FQCFAIL" => *flag |= BAM_FQCFAIL,
             "BAM_FDUP" => *flag |= BAM_FDUP,
             "BAM_FSUPPLEMENTARY" => *flag |= BAM_FSUPPLEMENTARY,
-            _ => anyhow::bail!("Unrecognized BAM flag specified: {f}"),
+            _ => {
+                return Err(Error::from(ErrorKind::UnknownBamFlag(f.into())));
+            }
         }
     }
 

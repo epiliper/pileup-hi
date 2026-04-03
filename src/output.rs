@@ -1,9 +1,9 @@
 use crate::alignment::PileupAlignment;
 use crate::bamio::OutputDataDest;
 use crate::engine::BUFWRITER_CAP;
+use crate::errors::Error;
 use crate::utils::{get_writer_multi, temp_fname, OutputWriter};
 use crate::{position_queue::GenomeInterval, refseq::RefSeqHandle};
-use anyhow::Error;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use log::{info, warn};
 use std::collections::VecDeque;

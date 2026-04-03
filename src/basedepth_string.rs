@@ -1,5 +1,5 @@
+use crate::errors::{Error, ErrorKind};
 use crate::{alignment::PileupAlignment, output::OrderedPileupOutput, refseq::RefSeqHandle};
-use anyhow::Error;
 use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
 use std::ops::AddAssign;
@@ -187,7 +187,11 @@ impl BaseDepthString {
                     b'C' => self.c += 1,
                     b'T' => self.t += 1,
                     b'N' => self.n += 1,
-                    other => anyhow::bail!("Unrecognized nucleotide character {}", other),
+                    other => {
+                        return Err(Error::from(ErrorKind::AnomalousData(format!(
+                            "Unrecognized nucleotide character: {other}"
+                        ))))
+                    }
                 }
             }
 

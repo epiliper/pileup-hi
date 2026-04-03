@@ -10,7 +10,7 @@ use crate::{
 
 use std::sync::{Arc, Condvar, Mutex};
 
-use anyhow::Error;
+use crate::errors::{Error, ErrorKind};
 use log::{info, warn};
 
 pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
@@ -167,7 +167,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
         let refseq = if let Some(ref fasta) = plp_params.refseq {
             if !std::fs::exists(std::path::Path::new(fasta))? {
-                anyhow::bail!("Fasta file provided ({}), doesn't exist!", fasta);
+                return Err(Error::from(ErrorKind::IOError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Fasta file {fasta} doesn't exist!",
+                ))));
             }
             Some(RefSeq::new(fasta.clone()))
         } else {

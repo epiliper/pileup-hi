@@ -22,7 +22,6 @@ pkg-config = "0.3.32"
 maintenance = { status = "actively_developed" }
 
 [dependencies]
-anyhow = "1.0.98"
 bio = "2.3.0"
 clap = { version = "4.5.38", features = ["derive", "cargo"] }
 num_cpus = "1.16.0"
