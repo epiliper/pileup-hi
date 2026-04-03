@@ -108,10 +108,6 @@ impl std::fmt::Display for Error {
                 write!(f, "Error occurred when loading/retrieving refseq: {s}")
             }
 
-            ErrorKind::CigarResolutionFailed(name) => {
-                write!(f, "Cigar resolution failed with read {name}")
-            }
-
             ErrorKind::MateOverlapFailed(name) => {
                 write!(f, "Mate overlap correction failed with read {name}")
             }
@@ -149,7 +145,6 @@ pub enum ErrorKind {
     RefSeqError(&'static str),
     BamNotSortedByCoordinate(i64, i64),
     BamNotSortedByReference(i32, i32),
-    CigarResolutionFailed(ReadQNAME),
     MateOverlapFailed(ReadQNAME),
     BAQFailed(ReadQNAME),
     UnknownBamFlag(Box<str>),

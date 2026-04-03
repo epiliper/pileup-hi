@@ -274,7 +274,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                 let ret = self.rbuf.attempt_push(self.tid, self.pos, r)?;
 
                 match ret {
-                    BufPushResult::Unmapped => panic!(),
+                    BufPushResult::Unmapped => (),
 
                     BufPushResult::DifferentReference => {
                         self.next_tid = r.tid();
@@ -419,7 +419,7 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
         generated = true;
 
         // advance to the current ref position in read and record cigar op
-        resolve_cigar(&mut r, pos)?;
+        resolve_cigar(&mut r, pos);
         let qual = *r.rec.qual().get(r.qpos).unwrap_or(&0);
 
         if qual < min_baseq {

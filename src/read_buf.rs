@@ -73,7 +73,7 @@ impl ReadBuffer {
         // stale.
         if plp.rec.pos() < pos && plp.rec.tid() == self.tail.tid {
             for i in plp.rec.pos()..pos {
-                resolve_cigar(&mut plp, i)?;
+                resolve_cigar(&mut plp, i);
             }
         }
 
