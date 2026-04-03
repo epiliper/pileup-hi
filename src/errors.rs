@@ -15,6 +15,10 @@ impl Error {
         error!("{e}");
         Self { kind }
     }
+
+    pub fn kind(&self) -> &ErrorKind {
+        &self.kind
+    }
 }
 
 impl From<std::io::Error> for Error {

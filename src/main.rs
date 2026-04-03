@@ -4,12 +4,12 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use crate::{
     basedepth_string::BaseDepthString,
     engine::PileupEngine,
+    errors::{Error, ErrorKind},
     output::setup_exit_handler,
     params::{parse_or_quit, Commands},
     pileup_string::PileupString,
 };
 
-use crate::errors::Error;
 use log::error;
 
 #[cfg(debug_assertions)]
@@ -30,7 +30,6 @@ mod pileup_string;
 mod position_queue;
 mod read_buf;
 mod read_filter;
-// mod realign_report;
 mod refseq;
 mod utils;
 
@@ -60,7 +59,13 @@ fn _main() -> Result<(), Error> {
 
 fn main() {
     if let Err(e) = _main() {
-        error!("Error: {}", e);
+        if let ErrorKind::IOError(e) = e.kind() {
+            if matches!(e.kind(), std::io::ErrorKind::BrokenPipe) {
+                std::process::exit(0);
+            }
+        }
+
+        error!("Error: {e}");
         std::process::exit(1);
     }
 }

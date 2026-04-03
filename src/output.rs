@@ -112,7 +112,12 @@ impl IntervalJobs {
 
                                 Ok(f) => {
                                     let mut reader = BufReader::with_capacity(2 * 1024 * 1024, f);
-                                    std::io::copy(&mut reader, &mut main_writer).unwrap();
+                                    if let Err(e) = std::io::copy(&mut reader, &mut main_writer) {
+                                        match e.kind() {
+                                            std::io::ErrorKind::Interrupted => (),
+                                            _ => panic!("{e}"),
+                                        }
+                                    }
                                 }
                             }
                             if let Err(e) = std::fs::remove_file(f) {
