@@ -42,12 +42,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: linux-x86_64
             
-          # Linux ARM64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact_name: linux-aarch64
-            cross: true
-            
           # macOS x86-64
           - os: macos-13
             target: x86_64-apple-darwin
@@ -89,36 +83,6 @@ jobs:
         run: |
           brew install htslib pkg-config
 
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.cross == true
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          
-          # Build htslib from source for ARM64
-          wget https://github.com/samtools/htslib/releases/download/1.19.1/htslib-1.19.1.tar.bz2
-          tar -xjf htslib-1.19.1.tar.bz2
-          cd htslib-1.19.1
-          
-          ./configure --host=aarch64-linux-gnu \
-            --prefix=$HOME/htslib-aarch64 \
-            CC=aarch64-linux-gnu-gcc \
-            AR=aarch64-linux-gnu-ar \
-            RANLIB=aarch64-linux-gnu-ranlib
-          make -j$(nproc)
-          make install
-          
-          # Set up pkg-config for cross-compilation
-          echo "PKG_CONFIG_PATH=$HOME/htslib-aarch64/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=$HOME/htslib-aarch64" >> $GITHUB_ENV
-
-      - name: Set up cross-compilation environment (Linux ARM64)
-        if: matrix.cross == true
-        run: |
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
-          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
       - name: Build
         run: |
           cargo build --release --target ${{ matrix.target }}
@@ -140,3 +104,28 @@ jobs:
           asset_path: ./pileup-hi-${{ matrix.artifact_name }}.tar.gz
           asset_name: pileup-hi-${{ github.ref_name }}-${{ matrix.artifact_name }}.tar.gz
           asset_content_type: application/gzip
+
+  publish:
+    name: publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v4
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: install dependencies
+        run:
+          sudo apt-get update 
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            zlib1g-dev \
+            libbz2-dev \
+            liblzma-dev \
+            libcurl14-openssl-dev \
+            libhts-dev
+      - name: publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN_PILEUPHI }}
