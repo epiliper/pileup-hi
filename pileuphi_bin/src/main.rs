@@ -1,7 +1,9 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use crate::{
+use log::error;
+
+use pileuphi_lib::{
     basedepth_string::BaseDepthString,
     engine::PileupEngine,
     errors::{Error, ErrorKind},
@@ -10,28 +12,8 @@ use crate::{
     pileup_string::PileupString,
 };
 
-use log::error;
-
 #[cfg(debug_assertions)]
 use log::warn;
-
-mod alignment;
-mod bamio;
-mod baq;
-mod basedepth_string;
-mod cigar_resolve;
-mod engine;
-mod errors;
-mod output;
-mod overlap;
-mod params;
-mod pileup_iterator;
-mod pileup_string;
-mod position_queue;
-mod read_buf;
-mod read_filter;
-mod refseq;
-mod utils;
 
 fn _main() -> Result<(), Error> {
     let params = parse_or_quit();
