@@ -169,8 +169,6 @@ Expect regression tests to be added as more functionality is added.
 ## The new `histo` format
 `histo` was developed as a condensed version of the pileup output format that remains a constant size regardless of alignment depth: it does so by providing a *count* of nucleotides rather than a *list*, and excludes qualities altogether. 
 
-`histo` is intended to maintain the minimum data necessary to do variant calling or consensus genome assembly (I have to work with viruses sometimes), but if you feel like the format needs an addition, feel free to raise an issue.
-
 An example of the differences between `plp` and `histo` can be seen in the [Installation and demo instructions section](#test-command).
 
 Below is an explanation of the format:
@@ -182,12 +180,11 @@ Below is an explanation of the format:
 - column 5: #G's
 - column 6: #C's
 - column 7: #T's
-- column 8: #T's
-- column 9: #N's
-- column 10: #Gaps
-- column 11: #Refskips
-- Column 12: space-delimited unique insertions\*
-- Column 13: space-delimited unique deletions\*
+- column 8: #N's
+- column 9: #Gaps
+- column 10: #Refskips
+- Column 11: space-delimited unique insertions\*
+- Column 12: space-delimited unique deletions\*
 
 \*Insertions and deletions are represented by their *count* followed by their *sequence*. For example:
 ```
