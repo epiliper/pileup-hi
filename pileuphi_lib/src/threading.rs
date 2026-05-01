@@ -4,7 +4,7 @@ use crate::{
     jobqueue::IntervalJob,
     output::{OrderedPileupOutput, OutputDestination, OutputFormat},
     params::PileupParams,
-    pileup_iterator::PileupIterator,
+    pileup_iterator::PileupIteratorCore,
     refseq::RefSeqHandle,
     utils::get_writer_multi,
 };
@@ -91,7 +91,7 @@ impl PileupWorker {
 
             let out = get_writer_multi(&job.out, BUFWRITER_CAP, true, false).unwrap();
 
-            let mut iterator = PileupIterator::new(
+            let mut iterator = PileupIteratorCore::new(
                 &src,
                 refseq,
                 &params,

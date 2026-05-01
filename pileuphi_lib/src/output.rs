@@ -3,6 +3,12 @@ use crate::errors::Error;
 use crate::refseq::RefSeqHandle;
 use crate::utils::OutputWriter;
 
+#[allow(type_alias_bounds)]
+pub enum PileupCoordinate<'a, T: OrderedPileupOutput> {
+    NoCoverage,
+    Coverage(&'a T),
+}
+
 /// The interface requirements for a pileup output. It needs to give ref information,
 /// intake pileup alignments, update current ref info, display depth, and write itself.
 pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
@@ -20,7 +26,7 @@ pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     /// Update reference data given ref num, pos, name, and sequence
     fn set_ref_info(&mut self, tid: i32, pos: i64, ref_name: &str, refseq: &RefSeqHandle);
 
-    fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error>;
+    fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error>;
 
     fn depth(&self) -> u32;
 
@@ -36,37 +42,34 @@ pub enum OutputDestination {
 }
 
 pub struct OutputFormat<T: OrderedPileupOutput> {
-    output: T,
+    pub output: T,
     dest: OutputDestination,
 }
-
-#[allow(type_alias_bounds)]
-pub type PileupCoordinate<'a, T: OrderedPileupOutput> = Option<&'a T>;
 
 impl<T: OrderedPileupOutput> OutputFormat<T> {
     pub fn new(output: T, dest: OutputDestination) -> Self {
         Self { output, dest }
     }
 
-    pub fn reject(&mut self) -> Option<&T> {
+    pub fn reject(&mut self) -> PileupCoordinate<'_, T> {
         self.output.clear();
-        None
+        PileupCoordinate::NoCoverage
     }
 
     pub fn cur(&mut self) -> &mut T {
         &mut self.output
     }
 
-    pub fn take(&mut self) -> Result<Option<&T>, Error> {
+    pub fn take(&mut self) -> Result<PileupCoordinate<'_, T>, Error> {
         match self.dest {
             OutputDestination::Memory => (),
             OutputDestination::Writer(ref mut writer) => self.output.write(writer)?,
         };
 
-        Ok(Some(&self.output))
+        Ok(PileupCoordinate::Coverage(&self.output))
     }
 
-    pub fn check(&mut self, emit: bool) -> Result<Option<&T>, Error> {
+    pub fn check(&mut self, emit: bool) -> Result<PileupCoordinate<'_, T>, Error> {
         if emit {
             self.take()
         } else {

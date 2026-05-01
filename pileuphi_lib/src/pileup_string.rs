@@ -45,7 +45,7 @@ impl OrderedPileupOutput for PileupString {
         self.intake(p, refseq)
     }
 
-    fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
+    fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
         self.write(writer)
     }
 
@@ -88,7 +88,7 @@ impl PileupString {
     }
 
     #[inline(always)]
-    pub fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
+    pub fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
         // print! {"{}\t{}\t{}\t{}\t", self.ref_name, self.ref_pos + 1, char::from(self.ref_base), self.depth }
         writer.write_all(self.ref_name.as_bytes())?;
@@ -112,7 +112,6 @@ impl PileupString {
             writer.write_all(&self.seqbuf)?;
             writer.write_all(b"\t")?;
             // print! {"{}\t", std::str::from_utf8(&self.seqbuf)?}
-            self.seqbuf.clear();
         }
 
         if self.qualbuf.is_empty() {
@@ -122,12 +121,9 @@ impl PileupString {
             // print! {"{}", std::str::from_utf8(&self.qualbuf)?}
             // unsafe { write!(writer, "{}", std::str::from_utf8_unchecked(&self.qualbuf))? }
             writer.write_all(&self.qualbuf)?;
-            self.qualbuf.clear();
         }
 
         writeln!(writer)?;
-
-        self.depth = 0;
 
         Ok(())
     }

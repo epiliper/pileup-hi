@@ -25,5 +25,6 @@ maintenance = { status = "actively_developed" }
 [dependencies]
 pileuphi_lib = { path = "../pileuphi_lib" , features = ["cli"]}
 log = "0.4.29"
+clap = {version = "4.5.38", features = ["derive", "cargo"]}
 tikv-jemallocator = "0.5"
 env_logger = "0.11.8"

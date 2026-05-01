@@ -13,7 +13,7 @@ use crate::{
     utils::read_ends_before_pos,
 };
 
-use likely_stable::likely;
+use likely_stable::if_likely;
 use rust_htslib::bam::Record;
 
 #[derive(Clone)]
@@ -34,7 +34,7 @@ enum EmitStrategy {
 
 /// The state machine performing the pileup generation and advancing across region coordinates.
 /// The type T dictates what output it generates.
-pub struct PileupIterator<T: OrderedPileupOutput> {
+pub struct PileupIteratorCore<T: OrderedPileupOutput> {
     tid: i32,
     next_tid: i32,
     last_tid_with_cov: i32,
@@ -58,7 +58,7 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
     read_len: usize,
 }
 
-impl<T: OrderedPileupOutput> PileupIterator<T> {
+impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
     /// Create a new pileup iterator from a data source (e.g. bam file), a set of query regions,
     /// input params and an output type.
     pub fn new(
@@ -140,6 +140,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
         {
             let output = self.dest.cur();
+            output.clear();
+
             output.set_ref_info(self.tid, self.pos, &self.reader.cur_ref, &self.refseq);
 
             if !skip {
@@ -160,7 +162,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             EmitStrategy::Everything => self.dest.take()?,
         };
 
-        if written.is_some() {
+        if matches!(written, PileupCoordinate::Coverage(_)) {
             self.last_tid_with_cov = self.tid;
         }
 
@@ -188,7 +190,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         let preset = self.emit.clone();
         self.emit = EmitStrategy::Nothing;
 
-        while self.step()?.is_some() {
+        while self.step().is_some() {
             continue;
         }
 
@@ -202,7 +204,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     }
 
     /// Update iterator state and prepare ref-specific data given a new interval.
-    fn set_ref(&mut self, interval: GenomeInterval) -> Result<(), Error> {
+    pub fn set_ref(&mut self, interval: GenomeInterval) -> Result<(), Error> {
         if interval.tid >= self.reader.header.target_count() as i64 {
             return Err(Error::from(ErrorKind::AnomalousData(format!(
                 "Interval has a reference index ({}) exceeding header maximum ({})",
@@ -318,22 +320,24 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
 
         self.set_ref(interval.clone())?;
         loop {
-            if likely(self.step()?.is_some()) {
-                continue;
-            } else {
-                break;
+            if_likely! { let Some(_next) = self.step() => {
+                    _next?;
+                    continue;
+
+                } else {
+                    break;
+                }
             }
         }
 
         Ok(())
     }
 
-    pub fn step(&mut self) -> Result<Option<PileupCoordinate<'_, T>>, Error> {
-        let mut ret = None;
-
+    // pub fn step(&mut self) -> Result<Option<PileupCoordinate<T>>, Error> {
+    pub fn step(&mut self) -> Option<Result<PileupCoordinate<'_, T>, Error>> {
         loop {
             if self.pos > self.max_pos {
-                return Ok(None);
+                return None;
             }
 
             // we have already hit the end of the current reference.
@@ -343,10 +347,9 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                     || matches!(self.emit, EmitStrategy::ByRef)
                     || matches!(self.emit, EmitStrategy::Everything)
                 {
-                    ret = self.set_pileup()?;
-                    return Ok(Some(ret));
+                    return Some(self.set_pileup());
                 } else {
-                    return Ok(None); // we are done
+                    return None; // we are done
                 }
             }
 
@@ -356,21 +359,21 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                 || matches!(self.emit, EmitStrategy::Everything)
             {
                 if self.pos < self.next_pos {
-                    self.set_pileup()?;
-                    return Ok(Some(ret));
+                    return Some(self.set_pileup());
                 }
                 // or we don't, in which case we just jump ahead.
             } else {
                 self.pos = self.rbuf.head.pos;
 
                 if self.pos < self.next_pos {
-                    ret = self.set_pileup()?;
-                    return Ok(Some(ret));
+                    return Some(self.set_pileup());
                 }
             }
 
             // we still need to sample more reads at this position
-            let _ = self.intake()?;
+            if let Err(e) = self.intake() {
+                return Some(Err(e)); // propagate error if something goes wrong here.
+            }
         }
     }
 }
@@ -435,4 +438,21 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
 
     rbuf.reset();
     Ok(generated)
+}
+
+pub struct PileupIterator<T: OrderedPileupOutput> {
+    core: PileupIteratorCore<T>,
+}
+
+#[allow(type_alias_bounds)]
+pub type PileupIterResult<'a, T: OrderedPileupOutput> = Option<Result<PileupCoordinate<'a, T>, Error>>;
+
+impl<T: OrderedPileupOutput> PileupIterator<T> {
+    pub fn advance(&mut self) -> PileupIterResult<'_, T> {
+        self.core.step()
+    }
+
+    pub fn from_iterator(iterator: PileupIteratorCore<T>) -> Self {
+        Self { core: iterator }
+    }
 }

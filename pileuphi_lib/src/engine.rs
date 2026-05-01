@@ -4,7 +4,7 @@ use crate::{
     jobqueue::IntervalJobs,
     output::{OrderedPileupOutput, OutputDestination, OutputFormat},
     params::{InputParams, PileupParams},
-    pileup_iterator::PileupIterator,
+    pileup_iterator::{PileupIterator, PileupIteratorCore},
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
     refseq::{RefSeq, RefSeqHandle},
     threading::ThreadPool,
@@ -49,9 +49,34 @@ pub struct PileupEngine<T: OrderedPileupOutput> {
     query: Option<RefCell<PileupEngineQuery>>,
     plp_params: PileupParams,
     output: T,
-    dest: OutputDataDest,
+    dest: Option<OutputDataDest>,
+    threads: usize,
     refseq: Option<RefSeq>,
 }
+
+/// An interface to generate pileups in memory, not writing to file. Single-threaded; parallelism is
+/// left up to the user.
+#[allow(type_alias_bounds)]
+pub type PileupStream<T: OrderedPileupOutput + 'static> = PileupEngine<T>;
+
+impl<T: OrderedPileupOutput + 'static> PileupStream<T> {
+    pub fn get_iter(&mut self, input: InputParams) -> Result<Vec<PileupIterator<T>>, Error> {
+        self.submit(input)?;
+        self.yield_iterator()
+    }
+}
+
+/// A pileup engine used to emit to files. Mulithreaded.
+#[allow(type_alias_bounds)]
+pub type PileupSink<T: OrderedPileupOutput> = PileupEngine<T>;
+
+impl<T: OrderedPileupOutput + 'static> PileupSink<T> {
+    pub fn run(&self) -> Result<(), Error> {
+        self._run()
+    }
+}
+
+///////////////////////////////////////////////////////////////
 
 impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     pub fn submit(&mut self, input: InputParams) -> Result<(), Error> {
@@ -63,9 +88,32 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         self.query.as_ref().map(|b| b.borrow())
     }
 
-    pub fn initialize(plp_params: PileupParams, output: T) -> Result<Self, Error> {
-        let dest = OutputDataDest::from_string(&plp_params.output);
+    fn yield_iterator(&self) -> Result<Vec<PileupIterator<T>>, Error> {
+        if let Some(query) = self.get_query() {
+            let mut ret = Vec::with_capacity(query.intervals.len());
 
+            for interval in query.intervals.iter() {
+                let mut _iterator = PileupIteratorCore::new(
+                    &query.src,
+                    self.get_refseq(&query.intervals[0].name)?,
+                    &self.plp_params,
+                    OutputFormat::new(self.output.clone(), OutputDestination::Memory),
+                )?;
+
+                _iterator.set_ref(interval.clone())?;
+
+                ret.push(PileupIterator::from_iterator(_iterator))
+            }
+
+            Ok(ret)
+        } else {
+            Err(Error::from(ErrorKind::BadInputRegions(
+                "user asked for iterator but no regions were loaded with submit()".to_string(),
+            )))
+        }
+    }
+
+    fn init_core(plp_params: PileupParams, output_type: T) -> Result<PileupEngine<T>, Error> {
         let refseq = if let Some(ref fasta) = plp_params.refseq {
             if !std::fs::exists(std::path::Path::new(fasta))? {
                 return Err(Error::from(ErrorKind::IOError(std::io::Error::new(
@@ -81,16 +129,34 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         Ok(Self {
             query: None,
             plp_params,
-            output,
-            dest,
+            output: output_type,
+            dest: None,
+            threads: 1,
             refseq,
         })
     }
 
-    pub fn run(&self) -> Result<(), Error> {
+    pub fn init_stream(plp_params: PileupParams, output: T) -> Result<PileupStream<T>, Error> {
+        Self::init_core(plp_params, output)
+    }
+
+    pub fn init_sink(
+        plp_params: PileupParams,
+        output_type: T,
+        output: &str,
+        threads: usize,
+    ) -> Result<PileupSink<T>, Error> {
+        assert!(threads > 0, "invalid number of threads passed: {}", threads);
+        let mut ret = Self::init_core(plp_params, output_type)?;
+        ret.threads = threads;
+        ret.dest = Some(OutputDataDest::from_string(output));
+        Ok(ret)
+    }
+
+    fn _run(&self) -> Result<(), Error> {
         if let Some(query) = self.get_query() {
             // remove old output file if it exists.
-            if let OutputDataDest::File(ref f) = self.dest {
+            if let OutputDataDest::File(ref f) = self.dest.as_ref().unwrap() {
                 if std::fs::exists(f)? {
                     warn!("Output file {} already exists! Overwriting...", f);
 
@@ -104,16 +170,16 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 info!("Found index for for input file {}", query.src.fname()?);
             }
 
-            if self.plp_params.threads == 1 {
+            if self.threads == 1 {
                 self.run_all_1t()?;
             } else if !query.src.has_index()? {
                 warn!(
                     "User asked for more than {} threads but file is unindexed. Running in single-thread mode...",
-                    self.plp_params.threads
+                    self.threads
                 );
                 self.run_all_1t()?;
             } else {
-                info!("Running with {} threads...", self.plp_params.threads);
+                info!("Running with {} threads...", self.threads);
                 self.run_all_par()?;
             }
         };
@@ -133,11 +199,11 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     fn run_all_1t(&self) -> Result<(), Error> {
         if let Some(ref query) = self.get_query() {
             for interval in query.intervals.iter() {
-                let main_writer = get_writer_multi(&self.dest, BUFWRITER_CAP, true, false)?;
+                let main_writer = get_writer_multi(self.dest.as_ref().unwrap(), BUFWRITER_CAP, true, false)?;
 
                 let refseq_handle = self.get_refseq(&interval.name)?;
 
-                let mut iterator = PileupIterator::new(
+                let mut iterator = PileupIteratorCore::new(
                     &query.src,
                     refseq_handle,
                     &self.plp_params,
@@ -156,11 +222,11 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             let mut jobs = IntervalJobs::new(
                 &query.intervals,
                 self.plp_params.coords_per_thread,
-                self.plp_params.threads as i64,
-                self.dest.clone(),
+                self.threads as i64,
+                self.dest.as_ref().unwrap().clone(),
             );
 
-            let mut pool = ThreadPool::new(self.plp_params.threads);
+            let mut pool = ThreadPool::new(self.threads);
             let mut n_jobs = 0;
 
             while !jobs.is_completed() {

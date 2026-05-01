@@ -1,56 +1,7 @@
 #[cfg(feature = "cli")]
-use {
-    crate::engine::MIN_COORDS_PER_THREAD,
-    clap::{crate_authors, crate_description, crate_version, Parser, Subcommand},
-};
+use {crate::engine::MIN_COORDS_PER_THREAD, clap::Parser};
 
 pub const STDOUT_ARG_STR: &str = "STDOUT";
-
-#[cfg(feature = "cli")]
-#[derive(Subcommand, Clone)]
-pub enum Commands {
-    /// Generate a samtools mpileup string
-    Plp(Params),
-    /// Generate a per-coordinate count of bases and indels
-    Histo(Params),
-}
-
-#[cfg(feature = "cli")]
-#[derive(Parser, Clone)]
-#[command(
-    name = "pileup-hi",
-    version = crate_version!(),
-    author = crate_authors!(),
-    about = crate_description!(),
-    help_template = "===== {name} {version} ===== \n{about}\n{author}\n\n{usage-heading} {usage}\n\n{all-args}"
-)]
-pub struct Args {
-    #[command(subcommand)]
-    pub command: Commands,
-}
-
-#[cfg(feature = "cli")]
-pub fn parse_or_quit() -> Args {
-    match Args::try_parse() {
-        Ok(p) => {
-            // no argument checking at the moment, leaving here for the future.
-            p
-        }
-        Err(e) => {
-            e.print().unwrap();
-            std::process::exit(1)
-        }
-    }
-}
-
-#[cfg_attr(feature = "cli", derive(Parser, Clone))]
-pub struct Params {
-    #[cfg_attr(feature = "cli", clap(flatten))]
-    pub inp: InputParams,
-
-    #[cfg_attr(feature = "cli", clap(flatten))]
-    pub plp: PileupParams,
-}
 
 #[cfg_attr(feature = "cli", derive(Parser, Clone))]
 pub struct InputParams {
@@ -65,20 +16,12 @@ pub struct InputParams {
 #[cfg_attr(feature = "cli", derive(Parser))]
 #[derive(Clone)]
 pub struct PileupParams {
-    /// Where to write all output to
-    #[cfg_attr(feature = "cli", arg(short = 'o', long = "output", default_value_t = STDOUT_ARG_STR.to_string()))]
-    pub output: String,
-
     #[cfg_attr(feature = "cli", arg(short = 'a'))]
     pub show_empty_coords: bool,
 
     /// Output positions for regions with no depth
     #[cfg_attr(feature = "cli", arg(long = "aa"))]
     pub show_empty_regions: bool,
-
-    /// Number of threads per reference
-    #[cfg_attr(feature = "cli", arg(short = 't', long = "threads", default_value_t = 3))]
-    pub threads: usize,
 
     #[cfg_attr(feature = "cli", arg(short = 'c', long = "thread-coords", default_value_t = MIN_COORDS_PER_THREAD))]
     pub coords_per_thread: i64,

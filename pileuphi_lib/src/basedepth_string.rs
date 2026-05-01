@@ -43,60 +43,7 @@ impl OrderedPileupOutput for BaseDepthString {
     }
 
     #[inline(always)]
-    fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
-        self.write(writer)
-    }
-
-    #[inline(always)]
-    fn depth(&self) -> u32 {
-        self.depth
-    }
-
-    #[inline(always)]
-    fn clear(&mut self) {
-        self.deletions.clear();
-        self.insertions.clear();
-    }
-
-    fn new() -> Self {
-        Self::new()
-    }
-}
-
-#[allow(clippy::new_without_default)]
-impl BaseDepthString {
-    pub fn new() -> Self {
-        Self {
-            tid: 0,
-            pos: 0,
-            ref_name: "".to_string(),
-            a: 0,
-            g: 0,
-            c: 0,
-            t: 0,
-            n: 0,
-            depth: 0,
-            gap: 0,
-            refskip: 0,
-            insertions: IndexMap::new(),
-            deletions: IndexMap::new(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.a = 0;
-        self.g = 0;
-        self.c = 0;
-        self.t = 0;
-        self.n = 0;
-        self.depth = 0;
-        self.gap = 0;
-        self.refskip = 0;
-        self.insertions.clear();
-        self.deletions.clear();
-    }
-
-    pub fn write<W: std::io::Write>(&mut self, writer: &mut W) -> Result<(), Error> {
+    fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
 
         writer.write_all(self.ref_name.as_bytes())?;
@@ -153,9 +100,51 @@ impl BaseDepthString {
         write!(writer, "]")?;
         writeln!(writer)?;
 
-        self.reset();
-
         Ok(())
+    }
+
+    #[inline(always)]
+    fn depth(&self) -> u32 {
+        self.depth
+    }
+
+    #[inline(always)]
+    fn clear(&mut self) {
+        self.a = 0;
+        self.g = 0;
+        self.c = 0;
+        self.t = 0;
+        self.n = 0;
+        self.depth = 0;
+        self.gap = 0;
+        self.refskip = 0;
+        self.insertions.clear();
+        self.deletions.clear();
+    }
+
+    fn new() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(clippy::new_without_default)]
+impl BaseDepthString {
+    pub fn new() -> Self {
+        Self {
+            tid: 0,
+            pos: 0,
+            ref_name: "".to_string(),
+            a: 0,
+            g: 0,
+            c: 0,
+            t: 0,
+            n: 0,
+            depth: 0,
+            gap: 0,
+            refskip: 0,
+            insertions: IndexMap::new(),
+            deletions: IndexMap::new(),
+        }
     }
 
     pub fn update(&mut self, tid: i32, ref_pos: i64, ref_name: &str) {

@@ -1,16 +1,18 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use log::error;
+mod args;
 
 use pileuphi_lib::{
     basedepth_string::BaseDepthString,
     engine::PileupEngine,
     errors::{Error, ErrorKind},
     jobqueue::setup_exit_handler,
-    params::{parse_or_quit, Commands},
     pileup_string::PileupString,
 };
+
+use crate::args::{parse_or_quit, Commands};
+use log::error;
 
 #[cfg(debug_assertions)]
 use log::warn;
@@ -26,13 +28,14 @@ fn _main() -> Result<(), Error> {
 
     match params.command {
         Commands::Plp(params) => {
-            let mut engine = PileupEngine::initialize(params.plp, PileupString::new())?;
+            let mut engine = PileupEngine::init_sink(params.plp, PileupString::new(), &params.output, params.threads)?;
             engine.submit(params.inp)?;
             engine.run()?
         }
 
         Commands::Histo(params) => {
-            let mut engine = PileupEngine::initialize(params.plp, BaseDepthString::new())?;
+            let mut engine =
+                PileupEngine::init_sink(params.plp, BaseDepthString::new(), &params.output, params.threads)?;
             engine.submit(params.inp)?;
             engine.run()?;
         }
