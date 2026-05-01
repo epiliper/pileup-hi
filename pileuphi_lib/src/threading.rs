@@ -2,7 +2,7 @@ use crate::{
     bamio::BamDataSource,
     engine::BUFWRITER_CAP,
     jobqueue::IntervalJob,
-    output::{OrderedPileupOutput, OutputFormat},
+    output::{OrderedPileupOutput, OutputDestination, OutputFormat},
     params::PileupParams,
     pileup_iterator::PileupIterator,
     refseq::RefSeqHandle,
@@ -91,7 +91,13 @@ impl PileupWorker {
 
             let out = get_writer_multi(&job.out, BUFWRITER_CAP, true, false).unwrap();
 
-            let mut iterator = PileupIterator::new(&src, refseq, &params, OutputFormat::new(o, out)).unwrap();
+            let mut iterator = PileupIterator::new(
+                &src,
+                refseq,
+                &params,
+                OutputFormat::new(o, OutputDestination::Writer(out)),
+            )
+            .unwrap();
 
             iterator.auto_loop2(&job.interval).unwrap();
 

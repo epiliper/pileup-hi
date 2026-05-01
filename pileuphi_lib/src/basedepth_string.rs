@@ -63,6 +63,7 @@ impl OrderedPileupOutput for BaseDepthString {
     }
 }
 
+#[allow(clippy::new_without_default)]
 impl BaseDepthString {
     pub fn new() -> Self {
         Self {

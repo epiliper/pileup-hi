@@ -132,6 +132,7 @@ impl PileupString {
         Ok(())
     }
 
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             tid: 0,

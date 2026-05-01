@@ -30,31 +30,43 @@ pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
     fn new() -> Self;
 }
 
-pub struct OutputFormat<T: OrderedPileupOutput> {
-    output: T,
-    writer: OutputWriter,
+pub enum OutputDestination {
+    Memory,
+    Writer(OutputWriter),
 }
 
+pub struct OutputFormat<T: OrderedPileupOutput> {
+    output: T,
+    dest: OutputDestination,
+}
+
+#[allow(type_alias_bounds)]
+pub type PileupCoordinate<'a, T: OrderedPileupOutput> = Option<&'a T>;
+
 impl<T: OrderedPileupOutput> OutputFormat<T> {
-    pub fn new(output: T, writer: OutputWriter) -> Self {
-        Self { output, writer }
+    pub fn new(output: T, dest: OutputDestination) -> Self {
+        Self { output, dest }
     }
 
-    pub fn reject(&mut self) -> bool {
+    pub fn reject(&mut self) -> Option<&T> {
         self.output.clear();
-        false
+        None
     }
 
     pub fn cur(&mut self) -> &mut T {
         &mut self.output
     }
 
-    pub fn take(&mut self) -> Result<bool, Error> {
-        self.output.write(&mut self.writer)?;
-        Ok(true)
+    pub fn take(&mut self) -> Result<Option<&T>, Error> {
+        match self.dest {
+            OutputDestination::Memory => (),
+            OutputDestination::Writer(ref mut writer) => self.output.write(writer)?,
+        };
+
+        Ok(Some(&self.output))
     }
 
-    pub fn check(&mut self, emit: bool) -> Result<bool, Error> {
+    pub fn check(&mut self, emit: bool) -> Result<Option<&T>, Error> {
         if emit {
             self.take()
         } else {

@@ -4,7 +4,7 @@ use crate::{
     cigar_resolve::resolve_cigar,
     engine::MIN_BAM_READ_THREADS,
     errors::{Error, ErrorKind},
-    output::{OrderedPileupOutput, OutputFormat},
+    output::{OrderedPileupOutput, OutputFormat, PileupCoordinate},
     params::PileupParams,
     position_queue::GenomeInterval,
     read_buf::{BufPushResult, ReadBuffer, ReadBufferEntry},
@@ -119,7 +119,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     /// iterator's current reference position. Importantly, generate_pileup() is where stale reads no longer
     /// overlapping the query position are removed.
     #[inline(always)]
-    pub fn set_pileup(&mut self) -> Result<(), Error> {
+    pub fn set_pileup(&mut self) -> Result<PileupCoordinate<'_, T>, Error> {
         let mut skip = false;
 
         // don't bother going through read buffer if it starts beyond the
@@ -160,11 +160,15 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             EmitStrategy::Everything => self.dest.take()?,
         };
 
-        if written {
+        if written.is_some() {
             self.last_tid_with_cov = self.tid;
         }
 
-        Ok(())
+        //////////////////////////
+        self.pos += 1;
+        /////////////////////////
+
+        Ok(written)
     }
 
     /// When given a region not starting at zero, rewind by 2X read length in order to populate the
@@ -324,7 +328,9 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         Ok(())
     }
 
-    pub fn step(&mut self) -> Result<Option<()>, Error> {
+    pub fn step(&mut self) -> Result<Option<PileupCoordinate<'_, T>>, Error> {
+        let mut ret = None;
+
         loop {
             if self.pos > self.max_pos {
                 return Ok(None);
@@ -337,9 +343,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                     || matches!(self.emit, EmitStrategy::ByRef)
                     || matches!(self.emit, EmitStrategy::Everything)
                 {
-                    self.set_pileup()?;
-                    self.pos += 1;
-                    return Ok(Some(()));
+                    ret = self.set_pileup()?;
+                    return Ok(Some(ret));
                 } else {
                     return Ok(None); // we are done
                 }
@@ -352,17 +357,15 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
             {
                 if self.pos < self.next_pos {
                     self.set_pileup()?;
-                    self.pos += 1;
-                    return Ok(Some(()));
+                    return Ok(Some(ret));
                 }
                 // or we don't, in which case we just jump ahead.
             } else {
                 self.pos = self.rbuf.head.pos;
 
                 if self.pos < self.next_pos {
-                    self.set_pileup()?;
-                    self.pos += 1;
-                    return Ok(Some(()));
+                    ret = self.set_pileup()?;
+                    return Ok(Some(ret));
                 }
             }
 

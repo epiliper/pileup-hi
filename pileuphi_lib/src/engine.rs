@@ -2,7 +2,7 @@ use crate::{
     bamio::{BamDataSource, BamReader, OutputDataDest},
     errors::{Error, ErrorKind},
     jobqueue::IntervalJobs,
-    output::{OrderedPileupOutput, OutputFormat},
+    output::{OrderedPileupOutput, OutputDestination, OutputFormat},
     params::{InputParams, PileupParams},
     pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
@@ -141,7 +141,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                     &query.src,
                     refseq_handle,
                     &self.plp_params,
-                    OutputFormat::new(self.output.clone(), main_writer),
+                    OutputFormat::new(self.output.clone(), OutputDestination::Writer(main_writer)),
                 )?;
 
                 iterator.auto_loop2(interval)?;
