@@ -134,13 +134,13 @@ P 47.out pileuphi plp -x -d 8500 -B -f mpileup.ref.fa deep.sam|$awk '{print $4}'
 # P 79.out $samtools mpileup -O --output-extra POS,FLAG,NM,QNAME,RG ../dat/view.001.sam
 
 # # -a and -aa.  See depth.reg too
-# P a0.out  $samtools mpileup -Q40 -r 17:1-4200 -f mpileup.ref.fa -a mpileup.1.$fmt
-# P a1.out  $samtools mpileup -ABQ0 -a  xx#depth1.sam
-# P a2.out  $samtools mpileup -ABQ0 -a  xx#depth2.sam
-# P a3.out  $samtools mpileup -ABQ0 -a  xx#depth1.sam xx#depth2.sam
-# P a4.out  $samtools mpileup -ABQ0 -aa xx#depth1.sam
-# P a5.out  $samtools mpileup -ABQ0 -aa xx#depth2.sam
-# P a6.out  $samtools mpileup -ABQ0 -aa xx#depth1.sam xx#depth2.sam
+P a0.out  pileuphi plp -t 1 -Q40 -r 17:1-4200 -f mpileup.ref.fa -a mpileup.1.$fmt
+P a1.out  pileuphi plp -t 1 -ABQ0 -a  xx#depth1.sam
+P a2.out  pileuphi plp -t 1 -ABQ0 -a  xx#depth2.sam
+# P a3.out  pileuphi plp -t 1 -ABQ0 -a  xx#depth1.sam xx#depth2.sam
+P a4.out  pileuphi plp -t 1 -ABQ0 --aa xx#depth1.sam
+P a5.out  pileuphi plp -t 1 -ABQ0 --aa xx#depth2.sam
+# P a6.out  pileuphi plp -t 1 -ABQ0 --aa xx#depth1.sam xx#depth2.sam
 
 # # -a with regions / bed
 # P a8.out  $samtools mpileup -ABQ0 -a -r xx:5-16 xx#depth1.bam xx#depth2.bam

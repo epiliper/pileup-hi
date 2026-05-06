@@ -10,7 +10,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
-pub static FILE_MERGE_SINGLETON: Mutex<Vec<OutputDataDest>> = Mutex::new(vec![]);
+pub static FILE_MERGE_SINGLETON: Mutex<Vec<OutputDataDest>> =
+    Mutex::new(vec![]);
 
 /// A job a worker thread can accept. Contains temp output file handle, the interval to process, and a "done" state.
 pub struct IntervalJobInner {
@@ -23,7 +24,10 @@ impl IntervalJobInner {
     fn new(interval: &GenomeInterval) -> Self {
         Self {
             out: OutputDataDest::from_string(&temp_fname(
-                &format!("{}:{}-{}", interval.name, interval.start, interval.end),
+                &format!(
+                    "{}:{}-{}",
+                    interval.name, interval.start, interval.end
+                ),
                 "",
                 ".temp",
             )),
@@ -44,8 +48,14 @@ pub struct IntervalJobs {
 }
 
 impl IntervalJobs {
-    pub fn new(intervals: &[GenomeInterval], min_coords_per_thread: i64, threads: i64, output: OutputDataDest) -> Self {
-        let mut map: VecDeque<(GenomeInterval, Vec<IntervalJob>)> = VecDeque::new();
+    pub fn new(
+        intervals: &[GenomeInterval],
+        min_coords_per_thread: i64,
+        threads: i64,
+        output: OutputDataDest,
+    ) -> Self {
+        let mut map: VecDeque<(GenomeInterval, Vec<IntervalJob>)> =
+            VecDeque::new();
         let mut queue: VecDeque<IntervalJob> = VecDeque::new();
         let mut lock = FILE_MERGE_SINGLETON.lock().unwrap();
 
@@ -66,14 +76,18 @@ impl IntervalJobs {
             map.push_back((interval.clone(), chunks.clone()));
         }
 
-        let (s, r): (Sender<Vec<IntervalJob>>, Receiver<Vec<IntervalJob>>) = unbounded();
+        let (s, r): (Sender<Vec<IntervalJob>>, Receiver<Vec<IntervalJob>>) =
+            unbounded();
 
         let handle = std::thread::spawn(move || {
-            let mut main_writer = get_writer_multi(&output, BUFWRITER_CAP, true, false).unwrap();
+            let mut main_writer =
+                get_writer_multi(&output, BUFWRITER_CAP, true, false).unwrap();
             while let Ok(temps) = r.recv() {
                 for tmp in temps {
                     match tmp.out {
-                        OutputDataDest::Stdout => panic!("cannot merge from stdout! Critical error"),
+                        OutputDataDest::Stdout => {
+                            panic!("cannot merge from stdout! Critical error")
+                        }
                         OutputDataDest::File(ref f) => {
                             match File::open(f) {
                                 Err(e) => {
@@ -84,10 +98,18 @@ impl IntervalJobs {
                                 }
 
                                 Ok(f) => {
-                                    let mut reader = BufReader::with_capacity(2 * 1024 * 1024, f);
-                                    if let Err(e) = std::io::copy(&mut reader, &mut main_writer) {
+                                    let mut reader = BufReader::with_capacity(
+                                        2 * 1024 * 1024,
+                                        f,
+                                    );
+                                    if let Err(e) = std::io::copy(
+                                        &mut reader,
+                                        &mut main_writer,
+                                    ) {
                                         match e.kind() {
-                                            std::io::ErrorKind::Interrupted => (),
+                                            std::io::ErrorKind::Interrupted => {
+                                                ()
+                                            }
                                             _ => panic!("{e}"),
                                         }
                                     }
@@ -105,7 +127,12 @@ impl IntervalJobs {
             }
         });
 
-        Self { map, handle, queue, s }
+        Self {
+            map,
+            handle,
+            queue,
+            s,
+        }
     }
 
     pub fn is_completed(&self) -> bool {

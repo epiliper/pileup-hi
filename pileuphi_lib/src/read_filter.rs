@@ -1,17 +1,5 @@
-use crate::errors::{Error, ErrorKind};
+use crate::errors::Error;
 use rust_htslib::bam::Record;
-
-const BAM_FPAIRED: u16 = 1;
-const BAM_FPROPER_PAIR: u16 = 2;
-const BAM_FUNMAP: u16 = 4;
-const BAM_FMUNMAP: u16 = 8;
-const BAM_FREVERSE: u16 = 16;
-const BAM_FREAD1: u16 = 64;
-const BAM_FREAD2: u16 = 128;
-const BAM_FSECONDARY: u16 = 256;
-const BAM_FQCFAIL: u16 = 512;
-const BAM_FDUP: u16 = 1024;
-const BAM_FSUPPLEMENTARY: u16 = 2048;
 
 pub struct ReadFilter {
     inc_flag: u16,
@@ -19,32 +7,66 @@ pub struct ReadFilter {
     count_orphans: bool,
 }
 
-fn add_to_flag(flags: Vec<&str>, flag: &mut u16) -> Result<(), Error> {
-    for f in flags.into_iter() {
-        match f {
-            "BAM_FPAIRED" => *flag |= BAM_FPAIRED,
-            "BAM_FSECONDARY" => *flag |= BAM_FSECONDARY,
-            "BAM_FPROPER_PAIR" => *flag |= BAM_FPROPER_PAIR,
-            "BAM_FUNMAP" => *flag |= BAM_FUNMAP,
-            "BAM_FMUNMAP" => *flag |= BAM_FMUNMAP,
-            "BAM_FREVERSE" => *flag |= BAM_FREVERSE,
-            "BAM_FREAD1" => *flag |= BAM_FREAD1,
-            "BAM_FREAD2" => *flag |= BAM_FREAD2,
-            "BAM_SECONDARY" => *flag |= BAM_FSECONDARY,
-            "BAM_FQCFAIL" => *flag |= BAM_FQCFAIL,
-            "BAM_FDUP" => *flag |= BAM_FDUP,
-            "BAM_FSUPPLEMENTARY" => *flag |= BAM_FSUPPLEMENTARY,
-            _ => {
-                return Err(Error::from(ErrorKind::UnknownBamFlag(f.into())));
-            }
+#[derive(Clone, Copy)]
+#[cfg(feature = "cli")]
+#[derive(clap::ValueEnum)]
+pub enum BamFlag {
+    Paired = 1,
+    ProperPair = 2,
+    Unmapped = 4,
+    MateUnmapped = 8,
+    Reverse = 16,
+    Read1 = 64,
+    Read2 = 128,
+    Secondary = 256,
+    QCFail = 512,
+    Duplicate = 1024,
+    Supplementary = 2048,
+}
+
+// don't change these, since they need to match with the clap value enum strings
+impl BamFlag {
+    pub fn as_str(&self) -> &str {
+        match self {
+            BamFlag::Paired => "paired",
+            BamFlag::ProperPair => "proper-pair",
+            BamFlag::Unmapped => "unmapped",
+            BamFlag::MateUnmapped => "mate-unmapped",
+            BamFlag::Reverse => "reverse",
+            BamFlag::Read1 => "read-1",
+            BamFlag::Read2 => "read-2",
+            BamFlag::Secondary => "secondary",
+            BamFlag::QCFail => "qc-fail",
+            BamFlag::Duplicate => "duplicate",
+            BamFlag::Supplementary => "supplementary",
         }
+    }
+}
+
+#[cfg(feature = "cli")]
+impl std::fmt::Display for BamFlag {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+fn add_to_flag(flags: &[BamFlag], flag: &mut u16) -> Result<(), Error> {
+    for f in flags.iter() {
+        *flag |= *f as u16;
     }
 
     Ok(())
 }
 
 impl ReadFilter {
-    pub fn new(count_orphans: bool, excl_flags: Vec<&str>, incl_flags: Vec<&str>) -> Result<Self, Error> {
+    pub fn new(
+        count_orphans: bool,
+        excl_flags: &[BamFlag],
+        incl_flags: &[BamFlag],
+    ) -> Result<Self, Error> {
         let mut s = Self {
             inc_flag: 0,
             exc_flag: 0,
@@ -55,7 +77,7 @@ impl ReadFilter {
         s.add_excl_flags(excl_flags)?;
         Ok(s)
     }
-    pub fn add_excl_flags(&mut self, flags: Vec<&str>) -> Result<(), Error> {
+    pub fn add_excl_flags(&mut self, flags: &[BamFlag]) -> Result<(), Error> {
         let mut flag: u16 = 0;
         add_to_flag(flags, &mut flag)?;
         self.exc_flag = flag;
@@ -63,7 +85,7 @@ impl ReadFilter {
         Ok(())
     }
 
-    pub fn add_incl_flags(&mut self, flags: Vec<&str>) -> Result<(), Error> {
+    pub fn add_incl_flags(&mut self, flags: &[BamFlag]) -> Result<(), Error> {
         let mut flag: u16 = 0;
         add_to_flag(flags, &mut flag)?;
         self.inc_flag = flag;

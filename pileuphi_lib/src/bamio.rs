@@ -61,7 +61,9 @@ impl BamDataSource {
 impl std::fmt::Display for BamDataSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::File(f) => f.to_str().unwrap_or("FILE NAME INVALID (character encoding?)"),
+            Self::File(f) => f
+                .to_str()
+                .unwrap_or("FILE NAME INVALID (character encoding?)"),
             Self::Stdin => "STDIN",
         })
     }
@@ -100,15 +102,17 @@ impl BamReader {
         let _has_index = src.has_index()?;
 
         let inner: Box<dyn BamRead> = match &src {
-            BamDataSource::File(file) => match has_index(file.to_str().unwrap())? {
-                true => {
-                    let mut inner = IndexedReader::new(src, threads)?;
-                    inner.fetch(".")?;
-                    inner
-                }
+            BamDataSource::File(file) => {
+                match has_index(file.to_str().unwrap())? {
+                    true => {
+                        let mut inner = IndexedReader::new(src, threads)?;
+                        inner.fetch(".")?;
+                        inner
+                    }
 
-                false => Reader::new(src, threads)?,
-            },
+                    false => Reader::new(src, threads)?,
+                }
+            }
 
             BamDataSource::Stdin => Reader::new(src, threads)?,
         };
@@ -150,7 +154,10 @@ impl BamReader {
         }
     }
 
-    pub fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>> {
+    pub fn read_no_alloc(
+        &mut self,
+        stored_read: &mut Record,
+    ) -> Option<Result<(), Error>> {
         // if we call read_no_alloc() on an unindexed reader after it already returned None (eof),
         // it will infinitely hang, at least with the version of rust-htslib I'm using.
         if self.eof {
@@ -160,8 +167,14 @@ impl BamReader {
         self.inner.read_no_alloc(stored_read)
     }
 
-    pub fn init_to_ref(&mut self, tid: u32, start: i64, end: i64) -> Result<(), Error> {
-        self.cur_ref = std::str::from_utf8(self.header.tid2name(tid))?.to_string();
+    pub fn init_to_ref(
+        &mut self,
+        tid: u32,
+        start: i64,
+        end: i64,
+    ) -> Result<(), Error> {
+        self.cur_ref =
+            std::str::from_utf8(self.header.tid2name(tid))?.to_string();
         self.inner.init_to_ref(tid, start, end)?;
 
         if self.eof && self.has_index {
@@ -174,17 +187,30 @@ impl BamReader {
 
 /// An interface used to allow reading both indexed and un-indexed bams with the same struct.
 pub trait BamRead {
-    fn init_to_ref(&mut self, tid: u32, start: i64, end: i64) -> Result<(), Error>;
+    fn init_to_ref(
+        &mut self,
+        tid: u32,
+        start: i64,
+        end: i64,
+    ) -> Result<(), Error>;
     fn get_header(&self) -> &HeaderView;
     fn new(src: &BamDataSource, threads: usize) -> Result<Box<Self>, Error>
     where
         Self: Sized;
-    fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>>;
+    fn read_no_alloc(
+        &mut self,
+        stored_read: &mut Record,
+    ) -> Option<Result<(), Error>>;
 }
 
 // Standard BAM Reader NO INDEX
 impl BamRead for Reader {
-    fn init_to_ref(&mut self, _tid: u32, _start: i64, _end: i64) -> Result<(), Error> {
+    fn init_to_ref(
+        &mut self,
+        _tid: u32,
+        _start: i64,
+        _end: i64,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -209,14 +235,22 @@ impl BamRead for Reader {
         Ok(Box::new(ret))
     }
 
-    fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>> {
+    fn read_no_alloc(
+        &mut self,
+        stored_read: &mut Record,
+    ) -> Option<Result<(), Error>> {
         self.read(stored_read).map(|res| res.map_err(Error::from))
     }
 }
 
 // Indexed Bam Reader
 impl BamRead for IndexedReader {
-    fn init_to_ref(&mut self, tid: u32, start: i64, end: i64) -> Result<(), Error> {
+    fn init_to_ref(
+        &mut self,
+        tid: u32,
+        start: i64,
+        end: i64,
+    ) -> Result<(), Error> {
         self.fetch((tid, start, end)).map_err(Error::from)
     }
 
@@ -235,17 +269,22 @@ impl BamRead for IndexedReader {
             }
 
             BamDataSource::Stdin => {
-                return Err(Error::from(ErrorKind::IOError(std::io::Error::new(
-                    std::io::ErrorKind::InvalidFilename,
-                    "Attemtped to create an indexed reader for STDIN",
-                ))));
+                return Err(Error::from(ErrorKind::IOError(
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidFilename,
+                        "Attemtped to create an indexed reader for STDIN",
+                    ),
+                )));
             }
         }
         ret.set_threads(threads)?;
         Ok(Box::new(ret))
     }
 
-    fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>> {
+    fn read_no_alloc(
+        &mut self,
+        stored_read: &mut Record,
+    ) -> Option<Result<(), Error>> {
         self.read(stored_read).map(|res| res.map_err(Error::from))
     }
 }

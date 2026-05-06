@@ -50,7 +50,11 @@ pub fn cigar2rlen(r: &Record) -> i64 {
     let mut len = 0;
     for op in &r.cigar() {
         match op {
-            Cigar::Match(l) | Cigar::Del(l) | Cigar::RefSkip(l) | Cigar::Equal(l) | Cigar::Diff(l) => len += l,
+            Cigar::Match(l)
+            | Cigar::Del(l)
+            | Cigar::RefSkip(l)
+            | Cigar::Equal(l)
+            | Cigar::Diff(l) => len += l,
             _ => (),
         }
     }

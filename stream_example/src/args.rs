@@ -1,5 +1,5 @@
 use clap::Parser;
-use pileuphi_lib::params::{InputParams, PileupParams, STDOUT_ARG_STR};
+use pileuphi_lib::param::{InputParams, PileupParams, STDOUT_ARG_STR};
 
 #[derive(Parser, Clone)]
 pub struct Params {

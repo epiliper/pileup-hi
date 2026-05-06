@@ -1,5 +1,8 @@
 #[cfg(feature = "cli")]
-use {crate::engine::MIN_COORDS_PER_THREAD, clap::Parser};
+use {
+    crate::engine::MIN_COORDS_PER_THREAD, crate::read_filter::BamFlag,
+    clap::Parser,
+};
 
 pub const STDOUT_ARG_STR: &str = "STDOUT";
 
@@ -31,7 +34,10 @@ pub struct PileupParams {
     pub refseq: Option<String>,
 
     /// The maximum number of reads to sample per position. Set to 0 to uncap
-    #[cfg_attr(feature = "cli", arg(short = 'd', long = "depth", default_value_t = 8000))]
+    #[cfg_attr(
+        feature = "cli",
+        arg(short = 'd', long = "depth", default_value_t = 8000)
+    )]
     pub depth: usize,
 
     /// Disable R1/R2 mate overlap correction
@@ -43,28 +49,42 @@ pub struct PileupParams {
     pub count_orphans: bool,
 
     #[cfg_attr(feature = "cli", arg(long = "rf"))]
-    pub incl_flags: Vec<String>,
+    pub incl_flags: Vec<BamFlag>,
 
     /// Don't consider any reads with these flags
-    #[cfg_attr(feature = "cli", arg(long = "ff", default_values_t = ["BAM_FSECONDARY".to_string(), "BAM_FQCFAIL".to_string(), "BAM_FDUP".to_string(), "BAM_FUNMAP".to_string()]))]
-    pub excl_flags: Vec<String>,
+    #[cfg_attr(feature = "cli", arg(long = "ff", default_values_t = [BamFlag::Secondary, BamFlag::QCFail, BamFlag::Duplicate, BamFlag::Unmapped]))]
+    pub excl_flags: Vec<BamFlag>,
 
     /// Minimum mapping quality for a read's bases to be counted
-    #[cfg_attr(feature = "cli", arg(short = 'q', long = "min-MQ", default_value_t = 0))]
+    #[cfg_attr(
+        feature = "cli",
+        arg(short = 'q', long = "min-MQ", default_value_t = 0)
+    )]
     pub min_mapq: u8,
 
     /// Minimum phred score for a base to be counted
-    #[cfg_attr(feature = "cli", arg(short = 'Q', long = "min-BQ", default_value_t = 13))]
+    #[cfg_attr(
+        feature = "cli",
+        arg(short = 'Q', long = "min-BQ", default_value_t = 13)
+    )]
     pub min_baseq: u8,
 
     /// Disable calcluation of base alignment quality (BAQ)
-    #[cfg_attr(feature = "cli", arg(short = 'B', long = "no-BAQ", default_value_t = false))]
+    #[cfg_attr(
+        feature = "cli",
+        arg(short = 'B', long = "no-BAQ", default_value_t = false)
+    )]
     pub no_baq: bool,
 
     /// Calculate BAQ even when BAQ already exists
     #[cfg_attr(
         feature = "cli",
-        arg(short = 'E', long = "redo-BAQ", default_value_t = false, conflicts_with("no_baq"))
+        arg(
+            short = 'E',
+            long = "redo-BAQ",
+            default_value_t = false,
+            conflicts_with("no_baq")
+        )
     )]
     pub redo_baq: bool,
 }

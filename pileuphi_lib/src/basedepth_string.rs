@@ -1,5 +1,8 @@
 use crate::errors::{Error, ErrorKind};
-use crate::{alignment::PileupAlignment, output::OrderedPileupOutput, refseq::RefSeqHandle};
+use crate::{
+    alignment::PileupAlignment, output::OrderedPileupOutput,
+    refseq::RefSeqHandle,
+};
 use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
 use std::ops::AddAssign;
@@ -33,12 +36,22 @@ impl OrderedPileupOutput for BaseDepthString {
         self.pos
     }
 
-    fn set_ref_info(&mut self, tid: i32, pos: i64, ref_name: &str, _ref_seq: &RefSeqHandle) {
+    fn set_ref_info(
+        &mut self,
+        tid: i32,
+        pos: i64,
+        ref_name: &str,
+        _ref_seq: &RefSeqHandle,
+    ) {
         self.update(tid, pos, ref_name);
     }
 
     #[inline(always)]
-    fn intake(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
+    fn intake(
+        &mut self,
+        p: &PileupAlignment,
+        refseq: &RefSeqHandle,
+    ) -> Result<(), Error> {
         self.intake(p, refseq)
     }
 
@@ -156,13 +169,21 @@ impl BaseDepthString {
     }
 
     #[inline(always)]
-    pub fn intake(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
+    pub fn intake(
+        &mut self,
+        p: &PileupAlignment,
+        refseq: &RefSeqHandle,
+    ) -> Result<(), Error> {
         self.depth += 1;
         self.register_pileup(p, refseq)
     }
 
     #[inline(always)]
-    pub fn register_pileup(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
+    pub fn register_pileup(
+        &mut self,
+        p: &PileupAlignment,
+        refseq: &RefSeqHandle,
+    ) -> Result<(), Error> {
         match p.del {
             false => {
                 let readbase = if p.qpos < p.rec.seq_len() {
@@ -178,9 +199,11 @@ impl BaseDepthString {
                     b'T' => self.t += 1,
                     b'N' => self.n += 1,
                     other => {
-                        return Err(Error::from(ErrorKind::AnomalousData(format!(
-                            "Unrecognized nucleotide character: {other}"
-                        ))))
+                        return Err(Error::from(ErrorKind::AnomalousData(
+                            format!(
+                                "Unrecognized nucleotide character: {other}"
+                            ),
+                        )))
                     }
                 }
             }
@@ -222,7 +245,11 @@ impl BaseDepthString {
 }
 
 #[inline(always)]
-pub fn expand_insertions(p: &PileupAlignment, seq_buf: &mut Vec<u8>, ndel: &mut i32) -> Result<(), Error> {
+pub fn expand_insertions(
+    p: &PileupAlignment,
+    seq_buf: &mut Vec<u8>,
+    ndel: &mut i32,
+) -> Result<(), Error> {
     let mut read_pos: usize;
     let mut read_base: u8;
     let ncig = p.cstate.cig.len();
@@ -232,7 +259,9 @@ pub fn expand_insertions(p: &PileupAlignment, seq_buf: &mut Vec<u8>, ndel: &mut 
     let mut offset = 1;
     while k < ncig {
         match p.cstate.cig[k] {
-            Cigar::Pad(l) => seq_buf.extend(std::iter::repeat_n(b'*', l as usize)),
+            Cigar::Pad(l) => {
+                seq_buf.extend(std::iter::repeat_n(b'*', l as usize))
+            }
             Cigar::Ins(l) => {
                 for _ in 0..l as usize {
                     read_pos = p.qpos + offset - p.del as usize;
