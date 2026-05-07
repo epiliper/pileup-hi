@@ -56,23 +56,31 @@ pub struct PileupEngine<T: OrderedPileupOutput> {
 
 /// An interface to generate pileups in memory, not writing to file. Single-threaded; parallelism is
 /// left up to the user.
-#[allow(type_alias_bounds)]
-pub type PileupStream<T: OrderedPileupOutput + 'static> = PileupEngine<T>;
+pub struct PileupStream<T: OrderedPileupOutput + 'static> {
+    engine: PileupEngine<T>,
+}
 
 impl<T: OrderedPileupOutput + 'static> PileupStream<T> {
     pub fn get_iter(&mut self, input: InputParams) -> Result<Vec<PileupIterator<T>>, Error> {
-        self.submit(input)?;
-        self.yield_iterator()
+        self.engine.submit(input)?;
+        self.engine.yield_iterator()
     }
 }
 
 /// A pileup engine used to emit to files. Mulithreaded.
-#[allow(type_alias_bounds)]
-pub type PileupSink<T: OrderedPileupOutput> = PileupEngine<T>;
+pub struct PileupSink<T: OrderedPileupOutput + 'static> {
+    engine: PileupEngine<T>,
+}
 
 impl<T: OrderedPileupOutput + 'static> PileupSink<T> {
+    /// Tell the engine to run over the specified input param region
+    pub fn submit(&mut self, input: InputParams) -> Result<(), Error> {
+        self.engine.submit(input)
+    }
+
+    /// Run the engine (this function blocks)
     pub fn run(&self) -> Result<(), Error> {
-        self._run()
+        self.engine._run()
     }
 }
 
@@ -136,10 +144,14 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         })
     }
 
+    /// Return an engine for iterating over records via the advance() API.
     pub fn init_stream(plp_params: PileupParams, output: T) -> Result<PileupStream<T>, Error> {
-        Self::init_core(plp_params, output)
+        Ok(PileupStream {
+            engine: Self::init_core(plp_params, output)?,
+        })
     }
 
+    /// Return an engine for writing to FILE, as opposed to memory. The number of threads dictates the number of regions processed in parallel.
     pub fn init_sink(
         plp_params: PileupParams,
         output_type: T,
@@ -147,10 +159,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         threads: usize,
     ) -> Result<PileupSink<T>, Error> {
         assert!(threads > 0, "invalid number of threads passed: {}", threads);
-        let mut ret = Self::init_core(plp_params, output_type)?;
-        ret.threads = threads;
-        ret.dest = Some(OutputDataDest::from_string(output));
-        Ok(ret)
+        let mut engine = Self::init_core(plp_params, output_type)?;
+        engine.threads = threads;
+        engine.dest = Some(OutputDataDest::from_string(output));
+        Ok(PileupSink { engine })
     }
 
     fn _run(&self) -> Result<(), Error> {

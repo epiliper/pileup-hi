@@ -3,7 +3,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod args;
 
-use pileuphi_lib::{outputs::PileupString, PileupCoordinate, PileupEngine};
+use pileuphi_lib::{PileupCoordinate, PileupEngine, outputs::PileupString};
 
 use crate::args::parse_or_quit;
 
