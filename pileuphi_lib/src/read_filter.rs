@@ -7,7 +7,7 @@ pub struct ReadFilter {
     count_orphans: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[cfg(feature = "cli")]
 #[derive(clap::ValueEnum)]
 pub enum BamFlag {

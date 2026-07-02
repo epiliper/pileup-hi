@@ -203,10 +203,10 @@ fn parse_region_string(s: &str) -> Result<RawPileupRegion, Error> {
     }
 }
 
-pub fn create_region_queue(argstr: &str, header: &HeaderView) -> Result<Vec<GenomeInterval>, Error> {
+pub fn create_region_queue(argstr: &[String], header: &HeaderView) -> Result<Vec<GenomeInterval>, Error> {
     let mut rawregions = vec![];
 
-    for s in argstr.split_terminator(",") {
+    for s in argstr {
         rawregions.push(parse_region_string(s)?);
     }
 

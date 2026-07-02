@@ -38,7 +38,7 @@ impl TryFrom<InputParams> for PileupEngineQuery {
         let tempreader = BamReader::new(&src, 1)?;
         let header = &tempreader.header;
 
-        let intervals = if let Some(region) = value.region {
+        let intervals = if let Some(region) = value.regions {
             create_region_queue(&region, header)?
         } else {
             intervals_from_header(header)?

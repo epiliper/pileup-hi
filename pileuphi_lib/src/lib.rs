@@ -1,3 +1,8 @@
+//! Library for generating pileups from the SAM/BAM formats, with APIs for live, streaming in-memory
+//! traversal and multi-threaded emission to file
+//!
+//! Supports custom-built output formats via the [OrderedPileupOutput] trait. 
+
 pub(crate) mod alignment;
 pub(crate) mod bamio;
 pub(crate) mod baq;
