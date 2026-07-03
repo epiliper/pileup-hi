@@ -229,9 +229,30 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     /// Split up a list of input genomic intervals into smaller chunks to be processed in parallel. Chunks are first written to temporary output files before being merged into the user-specified output file.
     fn run_all_par(&self) -> Result<(), Error> {
         if let Some(query) = self.get_query() {
+            // if we choose to limit read buffers to a given depth, then we need to process at least
+            // one entire reference per thread: we can't split up references into sub-chunks per
+            // thread.
+            //
+            // This is because the reads entering buffers at
+            // coordinate x are contingent on the reads that entered in coordinate x - 1, x - 2, and
+            // so on. If we wanted to get the same output with depth-limited buffers with multiple
+            // threads, each thread would have to go through the entire ENTIRE reference, which
+            // defeats the point of multithreading.
+            //
+            // I'm going to go with this constraint for now since we need to remain identical to
+            // samtools mpileup output.
+
+            // let sub_ref_split_strat = if self.plp_params.depth != 0 {
+            //     None
+            // } else {
+            //     Some(self.plp_params.coords_per_thread)
+            // };
+
+            let sub_ref_split_strat = Some(self.plp_params.coords_per_thread);
+
             let mut jobs = IntervalJobs::new(
                 &query.intervals,
-                self.plp_params.coords_per_thread,
+                sub_ref_split_strat,
                 self.threads as i64,
                 self.dest.as_ref().unwrap().clone(),
             );

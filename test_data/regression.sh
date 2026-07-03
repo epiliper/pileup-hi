@@ -33,6 +33,8 @@ set +o | grep pipefail >/dev/null && set -o pipefail
 REF_PATH=`pwd`/md5
 export REF_PATH
 
+THREAD_TEST_COUNTS=(1 4 8)
+
 # Executes a single test and compares against the expected output
 run_test() {
     p=$1; shift
@@ -87,6 +89,22 @@ run_test() {
     fi
 }
 
+run_command() {
+	localcmd=$1
+	if [ "`expr \"$localcmd\" : '.*\$fmt'`" != 0 -a "$samtools" != "./samtools-0.1.19" ]
+	then
+			_cmd=`printf '%s' "$localcmd" | sed 's/\$fmt/bam/'`
+			run_test $p $o $_cmd
+			_cmd=`printf '%s' "$localcmd" | sed 's/\$fmt/sam/'`
+			run_test $p $o $_cmd
+			_cmd=`printf '%s' "$localcmd" | sed 's/\$fmt/cram/'`
+			run_test $p $o $_cmd
+	else
+			_cmd=`printf '%s' "$localcmd" | sed 's/\$fmt/bam/'`
+			run_test $p $o $_cmd
+	fi
+}
+
 # Process regresion file
 regtest() {
     nupass=0; nepass=0
@@ -114,18 +132,27 @@ regtest() {
             fi
 
             test_iter=0
-            if [ "`expr \"$cmd\" : '.*\$fmt'`" != 0 -a "$samtools" != "./samtools-0.1.19" ]
-            then
-                _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/bam/'`
-                run_test $p $o $_cmd
-                _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/sam/'`
-                run_test $p $o $_cmd
-                _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/cram/'`
-                run_test $p $o $_cmd
-            else
-                _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/bam/'`
-                run_test $p $o $_cmd
-            fi
+            if [ "`expr \"$cmd\" : '.*\$threads'`" != 0 ]; then
+							for thread in "${THREAD_TEST_COUNTS[@]}"; do
+								_cmd=`printf '%s' "$cmd" | sed "s/\\\$threads/${thread}/"`
+								run_command "$_cmd"
+							done
+						else
+							run_command "$cmd"
+						fi
+
+            # if [ "`expr \"$cmd\" : '.*\$fmt'`" != 0 -a "$samtools" != "./samtools-0.1.19" ]
+            # then
+            #     _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/bam/'`
+            #     run_test $p $o $_cmd
+            #     _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/sam/'`
+            #     run_test $p $o $_cmd
+            #     _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/cram/'`
+            #     run_test $p $o $_cmd
+            # else
+            #     _cmd=`printf '%s' "$cmd" | sed 's/\$fmt/bam/'`
+            #     run_test $p $o $_cmd
+            # fi
             ;;
         esac
     done

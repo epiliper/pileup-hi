@@ -44,19 +44,32 @@ pub struct IntervalJobs {
 }
 
 impl IntervalJobs {
-    pub fn new(intervals: &[GenomeInterval], min_coords_per_thread: i64, threads: i64, output: OutputDataDest) -> Self {
+    pub fn new(
+        intervals: &[GenomeInterval],
+        min_coords_per_thread: Option<i64>,
+        threads: i64,
+        output: OutputDataDest,
+    ) -> Self {
         let mut map: VecDeque<(GenomeInterval, Vec<IntervalJob>)> = VecDeque::new();
         let mut queue: VecDeque<IntervalJob> = VecDeque::new();
         let mut lock = FILE_MERGE_SINGLETON.lock().unwrap();
 
         for interval in intervals {
-            let chunks = if interval.len() < min_coords_per_thread {
-                interval.chunks(min_coords_per_thread)
-            } else {
-                interval.n_chunks(threads)
-            }
-            .map(|c| Arc::new(IntervalJobInner::new(&c)))
-            .collect::<Vec<IntervalJob>>();
+            let chunks = match min_coords_per_thread {
+                // we want to split refs into smaller sub chunks
+                Some(min_coords_per_thread) => if interval.len() < min_coords_per_thread {
+                    interval.chunks(min_coords_per_thread)
+                } else {
+                    interval.n_chunks(threads)
+                }
+                .map(|c| Arc::new(IntervalJobInner::new(&c)))
+                .collect::<Vec<IntervalJob>>(),
+
+                // or we want one thread to process one entire reference
+                None => {
+                    vec![Arc::new(IntervalJobInner::new(interval))]
+                }
+            };
 
             chunks.iter().for_each(|c| {
                 queue.push_back(c.clone());
