@@ -19,8 +19,8 @@ pub struct InputParams {
     /// File to read (path) or stdout ("-")
     pub file: String,
 
-    /// only process a particular bam region (e.g. chr1:0-8000)
-    #[cfg_attr(feature = "cli", arg(short = 'r', long = "region"))]
+    /// only process particular bam regions (comma separated, e.g. chr1:0-8000,chr2)
+    #[cfg_attr(feature = "cli", arg(short = 'r', long = "region", value_delimiter = ','))]
     pub regions: Option<Vec<String>>,
 }
 
@@ -55,6 +55,10 @@ pub struct PileupParams {
     /// Count reads with unmapped mates
     #[cfg_attr(feature = "cli", arg(short = 'A'))]
     pub count_orphans: bool,
+
+    /// Allow intra-reference threading when depth is fixed. May differ from samtools mpileup output
+    #[cfg_attr(feature = "cli", arg(long = "lax-depth", default_value_t = false))]
+    pub lax_depth: bool,
 
     #[cfg_attr(feature = "cli", arg(long = "rf"))]
     pub incl_flags: Vec<BamFlag>,
@@ -101,6 +105,7 @@ impl Default for PileupParams {
             coords_per_thread: MIN_COORDS_PER_THREAD,
             refseq: None,
             depth: DEFAULT_MPLP_DEPTH,
+            lax_depth: false,
             disable_overlaps: false,
             count_orphans: false,
             incl_flags: vec![],

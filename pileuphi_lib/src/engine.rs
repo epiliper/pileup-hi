@@ -242,13 +242,14 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             // I'm going to go with this constraint for now since we need to remain identical to
             // samtools mpileup output.
 
-            // let sub_ref_split_strat = if self.plp_params.depth != 0 {
-            //     None
-            // } else {
-            //     Some(self.plp_params.coords_per_thread)
-            // };
+            let sub_ref_split_strat = if self.plp_params.depth != 0 && !self.plp_params.lax_depth {
+                warn!("Depth was bound to {}, so one thread will be used per reference. For generally faster sub-reference threading, either set depth to 0 (disable) or enable lax_depth.", self.plp_params.depth);
+                None
+            } else {
+                Some(self.plp_params.coords_per_thread)
+            };
 
-            let sub_ref_split_strat = Some(self.plp_params.coords_per_thread);
+            // let sub_ref_split_strat = Some(self.plp_params.coords_per_thread);
 
             let mut jobs = IntervalJobs::new(
                 &query.intervals,
@@ -256,6 +257,11 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 self.threads as i64,
                 self.dest.as_ref().unwrap().clone(),
             );
+
+            // if we just get one job after splitting, just use one thread.
+            if jobs.queue.len() == 1 {
+                return self.run_all_1t();
+            }
 
             let mut pool = ThreadPool::new(self.threads);
             let mut n_jobs = 0;
