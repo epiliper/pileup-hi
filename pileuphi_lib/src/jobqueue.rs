@@ -2,7 +2,8 @@ use crate::bamio::OutputDataDest;
 use crate::engine::BUFWRITER_CAP;
 use crate::errors::Error;
 use crate::position_queue::GenomeInterval;
-use crate::utils::{get_writer_multi, temp_fname};
+use crate::utils::temp_fname;
+use crate::utils::OutputWriter;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use log::{info, warn};
 use std::collections::VecDeque;
@@ -82,7 +83,7 @@ impl IntervalJobs {
         let (s, r): (Sender<Vec<IntervalJob>>, Receiver<Vec<IntervalJob>>) = unbounded();
 
         let handle = std::thread::spawn(move || {
-            let mut main_writer = get_writer_multi(&output, BUFWRITER_CAP, true, false).unwrap();
+            let mut main_writer = OutputWriter::new(&output, BUFWRITER_CAP, true, false).unwrap();
             while let Ok(temps) = r.recv() {
                 for tmp in temps {
                     match tmp.out {
@@ -100,7 +101,7 @@ impl IntervalJobs {
 
                                 Ok(f) => {
                                     let mut reader = BufReader::with_capacity(2 * 1024 * 1024, f);
-                                    if let Err(e) = std::io::copy(&mut reader, &mut main_writer) {
+                                    if let Err(e) = std::io::copy(&mut reader, &mut main_writer.get()) {
                                         match e.kind() {
                                             std::io::ErrorKind::Interrupted => (),
                                             _ => panic!("{e}"),

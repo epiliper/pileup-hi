@@ -1,10 +1,8 @@
+use std::io::Write;
 use std::{fs::OpenOptions, io::BufWriter};
 
-use crate::{alignment::PileupAlignment, bamio::OutputDataDest};
-
-pub type OutputWriter = BufWriter<Box<dyn std::io::Write>>;
-
 use crate::errors::Error;
+use crate::{alignment::PileupAlignment, bamio::OutputDataDest};
 
 pub fn read_ends_before_pos(a: &PileupAlignment, pos: i64) -> bool {
     a.rec.pos() + a.cstate.read_len_from_cigar - 1 < pos
@@ -14,35 +12,48 @@ pub fn temp_fname(prefix: &str, suffix: &str, ext: &str) -> String {
     format!("{prefix}_{suffix}.{ext}")
 }
 
-/// Get a writer to a particular destination. Lock specifies whether or not
-/// we expect the writer to be the sole writer the source
-pub fn get_writer_multi(
-    handle: &OutputDataDest,
-    writer_cap: usize,
-    lock: bool,
-    append: bool,
-) -> Result<OutputWriter, Error> {
-    let dest: Box<dyn std::io::Write> = match handle {
-        OutputDataDest::File(p) => {
-            let mut o = OpenOptions::new();
-            let file = o.write(true).create(true).append(append).open(p)?;
+pub struct OutputWriter {
+    #[allow(dead_code)]
+    dest: OutputDataDest,
+    writer: BufWriter<Box<dyn std::io::Write>>,
+}
 
-            if lock {
-                file.lock()?;
+impl OutputWriter {
+    pub fn new(handle: &OutputDataDest, writer_cap: usize, lock: bool, append: bool) -> Result<Self, Error> {
+        let writer: BufWriter<Box<dyn std::io::Write>> = match handle {
+            OutputDataDest::File(file) => {
+                let mut o = OpenOptions::new();
+                let file = o.write(true).create(true).append(append).open(file)?;
+
+                if lock {
+                    file.lock()?;
+                }
+
+                BufWriter::with_capacity(writer_cap, Box::new(file))
             }
-            Box::new(file)
-        }
 
-        OutputDataDest::Stdout => {
-            if lock {
-                Box::new(std::io::stdout().lock())
-            } else {
-                Box::new(std::io::stdout())
+            OutputDataDest::Stdout => {
+                if lock {
+                    BufWriter::with_capacity(writer_cap, Box::new(std::io::stdout().lock()))
+                } else {
+                    BufWriter::with_capacity(writer_cap, Box::new(std::io::stdout()))
+                }
             }
-        }
-    };
+        };
 
-    Ok(BufWriter::with_capacity(writer_cap, dest))
+        Ok(Self {
+            dest: handle.clone(),
+            writer,
+        })
+    }
+
+    pub fn get(&mut self) -> &mut BufWriter<Box<dyn std::io::Write>> {
+        &mut self.writer
+    }
+
+    pub fn flush(&mut self) -> Result<(), Error> {
+        self.writer.flush().map_err(Error::from)
+    }
 }
 
 pub fn has_index(bam_file: &str) -> Result<bool, Error> {

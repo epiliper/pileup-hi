@@ -1,12 +1,7 @@
 use crate::{
-    bamio::BamDataSource,
-    engine::BUFWRITER_CAP,
-    jobqueue::IntervalJob,
-    output::{OrderedPileupOutput, OutputDestination, OutputFormat},
-    params::PileupParams,
-    pileup_iterator::PileupIteratorCore,
-    refseq::RefSeqHandle,
-    utils::get_writer_multi,
+    bamio::BamDataSource, engine::BUFWRITER_CAP, jobqueue::IntervalJob, output::OrderedPileupOutput,
+    params::PileupParams, pileup_iterator::PileupIteratorCore, refseq::RefSeqHandle, utils::OutputWriter,
+    PileupCoordinate,
 };
 
 use std::sync::{Arc, Condvar, Mutex};
@@ -78,7 +73,6 @@ impl PileupWorker {
         params: PileupParams,
         job: IntervalJob,
         src: BamDataSource,
-        o: T,
         refseq: RefSeqHandle,
     ) where
         T: OrderedPileupOutput + 'static,
@@ -89,17 +83,17 @@ impl PileupWorker {
         self.handle = Some(std::thread::spawn(move || {
             notify.mark_running();
 
-            let out = get_writer_multi(&job.out, BUFWRITER_CAP, true, false).unwrap();
+            let mut out = OutputWriter::new(&job.out, BUFWRITER_CAP, false, false).unwrap();
+            let mut iterator = PileupIteratorCore::<T>::new(&src, refseq, &params).unwrap();
+            iterator.set_ref(&job.interval).expect("Failed to set thread interval");
 
-            let mut iterator = PileupIteratorCore::new(
-                &src,
-                refseq,
-                &params,
-                OutputFormat::new(o, OutputDestination::Writer(out)),
-            )
-            .unwrap();
+            while let Some(iter) = iterator.step() {
+                if let PileupCoordinate::Coverage(plp) = iter.expect("Pileup failed") {
+                    plp.write(&mut out.get()).expect("pileup writing failed")
+                }
+            }
 
-            iterator.auto_loop2(&job.interval).unwrap();
+            out.flush().expect("Failed to flush thread writer");
 
             // signal that we're done.
             *job.done.lock().unwrap() = true;

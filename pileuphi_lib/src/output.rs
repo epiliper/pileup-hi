@@ -1,7 +1,6 @@
 use crate::alignment::PileupAlignment;
 use crate::errors::Error;
 use crate::refseq::RefSeqHandle;
-use crate::utils::OutputWriter;
 
 #[allow(type_alias_bounds)]
 pub enum PileupCoordinate<'a, T: OrderedPileupOutput> {
@@ -34,46 +33,4 @@ pub trait OrderedPileupOutput: Send + Sync + Clone + std::fmt::Debug {
 
     #[allow(dead_code)]
     fn new() -> Self;
-}
-
-pub enum OutputDestination {
-    Memory,
-    Writer(OutputWriter),
-}
-
-pub struct OutputFormat<T: OrderedPileupOutput> {
-    pub output: T,
-    dest: OutputDestination,
-}
-
-impl<T: OrderedPileupOutput> OutputFormat<T> {
-    pub fn new(output: T, dest: OutputDestination) -> Self {
-        Self { output, dest }
-    }
-
-    pub fn reject(&mut self) -> PileupCoordinate<'_, T> {
-        self.output.clear();
-        PileupCoordinate::NoCoverage
-    }
-
-    pub fn cur(&mut self) -> &mut T {
-        &mut self.output
-    }
-
-    pub fn take(&mut self) -> Result<PileupCoordinate<'_, T>, Error> {
-        match self.dest {
-            OutputDestination::Memory => (),
-            OutputDestination::Writer(ref mut writer) => self.output.write(writer)?,
-        };
-
-        Ok(PileupCoordinate::Coverage(&self.output))
-    }
-
-    pub fn check(&mut self, emit: bool) -> Result<PileupCoordinate<'_, T>, Error> {
-        if emit {
-            self.take()
-        } else {
-            Ok(self.reject())
-        }
-    }
 }

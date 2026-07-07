@@ -2,13 +2,14 @@ use crate::{
     bamio::{BamDataSource, BamReader, OutputDataDest},
     errors::{Error, ErrorKind},
     jobqueue::IntervalJobs,
-    output::{OrderedPileupOutput, OutputDestination, OutputFormat},
+    output::OrderedPileupOutput,
     params::{InputParams, PileupParams},
     pileup_iterator::{PileupIterator, PileupIteratorCore},
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
     refseq::{RefSeq, RefSeqHandle},
     threading::ThreadPool,
-    utils::get_writer_multi,
+    utils::OutputWriter,
+    PileupCoordinate,
 };
 
 use log::{info, warn};
@@ -104,14 +105,10 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             let mut ret = Vec::with_capacity(query.intervals.len());
 
             for interval in query.intervals.iter() {
-                let mut _iterator = PileupIteratorCore::new(
-                    &query.src,
-                    self.get_refseq(&query.intervals[0].name)?,
-                    &self.plp_params,
-                    OutputFormat::new(T::new(), OutputDestination::Memory),
-                )?;
+                let mut _iterator =
+                    PileupIteratorCore::new(&query.src, self.get_refseq(&query.intervals[0].name)?, &self.plp_params)?;
 
-                _iterator.set_ref(interval.clone())?;
+                _iterator.set_ref(interval)?;
 
                 ret.push(PileupIterator::from_iterator(_iterator))
             }
@@ -209,18 +206,19 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     fn run_all_1t(&self) -> Result<(), Error> {
         if let Some(ref query) = self.get_query() {
             for interval in query.intervals.iter() {
-                let main_writer = get_writer_multi(self.dest.as_ref().unwrap(), BUFWRITER_CAP, true, false)?;
-
+                let mut main_writer = OutputWriter::new(self.dest.as_ref().unwrap(), BUFWRITER_CAP, true, false)?;
                 let refseq_handle = self.get_refseq(&interval.name)?;
 
-                let mut iterator = PileupIteratorCore::new(
-                    &query.src,
-                    refseq_handle,
-                    &self.plp_params,
-                    OutputFormat::new(T::new(), OutputDestination::Writer(main_writer)),
-                )?;
+                let mut iterator = PileupIteratorCore::<T>::new(&query.src, refseq_handle, &self.plp_params)?;
+                iterator.set_ref(interval)?;
 
-                iterator.auto_loop2(interval)?;
+                while let Some(iter) = iterator.step() {
+                    if let PileupCoordinate::Coverage(plp) = iter? {
+                        plp.write(&mut main_writer.get())?
+                    }
+                }
+
+                main_writer.flush()?;
             }
         }
         Ok(())
@@ -275,14 +273,7 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
 
                         let refseq_handle = self.get_refseq(&job.interval.name)?;
 
-                        worker.run(
-                            n_jobs,
-                            self.plp_params.clone(),
-                            job,
-                            query.src.clone(),
-                            T::new(),
-                            refseq_handle,
-                        );
+                        worker.run::<T>(n_jobs, self.plp_params.clone(), job, query.src.clone(), refseq_handle);
                     }
                 }
             }
