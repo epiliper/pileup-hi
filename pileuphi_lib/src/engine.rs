@@ -2,7 +2,7 @@ use crate::{
     bamio::{BamDataSource, BamReader, OutputDataDest},
     errors::{Error, ErrorKind},
     jobqueue::IntervalJobs,
-    output::OrderedPileupOutput,
+    output::{write_multiple_outputs, OrderedPileupOutput},
     params::{InputParams, PileupParams},
     pileup_iterator::{PileupIterator, PileupIteratorCore},
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
@@ -29,14 +29,18 @@ pub const MIN_COORDS_PER_THREAD: i64 = 250_000;
 
 struct PileupEngineQuery {
     intervals: Vec<GenomeInterval>,
-    src: BamDataSource,
+    src: Vec<BamDataSource>,
 }
 
 impl TryFrom<InputParams> for PileupEngineQuery {
     type Error = Error;
     fn try_from(value: InputParams) -> Result<Self, Error> {
-        let src = BamDataSource::from_string(&value.file)?;
-        let tempreader = BamReader::new(&src, 1)?;
+        let mut src = Vec::with_capacity(value.file.len());
+        for file in value.file {
+            src.push(BamDataSource::from_string(&file)?);
+        }
+
+        let tempreader = BamReader::new(&src[0], 1)?;
         let header = &tempreader.header;
 
         let intervals = if let Some(region) = value.regions {
@@ -105,12 +109,12 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
             let mut ret = Vec::with_capacity(query.intervals.len());
 
             for interval in query.intervals.iter() {
-                let mut _iterator =
-                    PileupIteratorCore::new(&query.src, self.get_refseq(&query.intervals[0].name)?, &self.plp_params)?;
-
-                _iterator.set_ref(interval)?;
-
-                ret.push(PileupIterator::from_iterator(_iterator))
+                ret.push(PileupIterator::from_query(
+                    &query.src,
+                    self.get_refseq(&interval.name)?,
+                    interval,
+                    &self.plp_params,
+                )?);
             }
 
             Ok(ret)
@@ -173,15 +177,17 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
                 }
             }
 
-            if query.src.has_index()? {
-                info!("Found index for for input file {}", query.src.fname()?);
+            let index_found = query.src.iter().all(|f| f.has_index().unwrap_or(false));
+
+            if index_found {
+                info!("Found index for for input files");
             }
 
             if self.threads == 1 {
                 self.run_all_1t()?;
-            } else if !query.src.has_index()? {
+            } else if !index_found {
                 warn!(
-                    "User asked for more than {} threads but file is unindexed. Running in single-thread mode...",
+                    "User asked for more than {} threads but at least one input file is unindexed. Running in single-threaded mode",
                     self.threads
                 );
                 self.run_all_1t()?;
@@ -207,15 +213,16 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         if let Some(ref query) = self.get_query() {
             for interval in query.intervals.iter() {
                 let mut main_writer = OutputWriter::new(self.dest.as_ref().unwrap(), BUFWRITER_CAP, true, false)?;
-                let refseq_handle = self.get_refseq(&interval.name)?;
 
-                let mut iterator = PileupIteratorCore::<T>::new(&query.src, refseq_handle, &self.plp_params)?;
-                iterator.set_ref(interval)?;
+                let mut iterator = PileupIterator::<T>::from_query(
+                    &query.src,
+                    self.get_refseq(&interval.name)?,
+                    interval,
+                    &self.plp_params,
+                )?;
 
-                while let Some(iter) = iterator.step() {
-                    if let PileupCoordinate::Coverage(plp) = iter? {
-                        plp.write(&mut main_writer.get())?
-                    }
+                while iterator.advance()?.is_some() {
+                    write_multiple_outputs(&iterator.ctx(), iterator.current(), main_writer.get())?;
                 }
 
                 main_writer.flush()?;

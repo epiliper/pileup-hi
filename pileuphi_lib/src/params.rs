@@ -17,7 +17,8 @@ pub const DEFAULT_MIN_MAPQ: u8 = 0;
 /// Parameters specifying an input file and optional regions for processing.
 pub struct InputParams {
     /// File to read (path) or stdout ("-")
-    pub file: String,
+    #[cfg_attr(feature = "cli", arg(value_delimiter = ','))]
+    pub file: Vec<String>,
 
     /// only process particular bam regions (comma separated, e.g. chr1:0-8000,chr2)
     #[cfg_attr(feature = "cli", arg(short = 'r', long = "region", value_delimiter = ','))]
@@ -89,9 +90,11 @@ pub struct PileupParams {
 
 impl InputParams {
     /// Create input parameters from a BAM file/stdin and an optional list of query region. If path is None, then input will be assumed to come from stdin. If regions is None, then all references in the BAM will be processed.
-    pub fn new(path: Option<&str>, regions: Option<&[&str]>) -> Self {
+    pub fn new(path: Option<&[&str]>, regions: Option<&[&str]>) -> Self {
         Self {
-            file: path.map_or("STDOUT_ARG_STR", |v| v).to_string(),
+            file: path
+                .map(|r| r.iter().map(|r| r.to_string()).collect::<Vec<String>>())
+                .unwrap_or(vec!["STDOUT_ARG_STR".to_string()]),
             regions: regions.map(|r| r.iter().map(|r| r.to_string()).collect::<Vec<String>>()),
         }
     }

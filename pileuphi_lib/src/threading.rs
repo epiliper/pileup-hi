@@ -1,6 +1,12 @@
 use crate::{
-    bamio::BamDataSource, engine::BUFWRITER_CAP, jobqueue::IntervalJob, output::OrderedPileupOutput,
-    params::PileupParams, pileup_iterator::PileupIteratorCore, refseq::RefSeqHandle, utils::OutputWriter,
+    bamio::BamDataSource,
+    engine::BUFWRITER_CAP,
+    jobqueue::IntervalJob,
+    output::{write_multiple_outputs, OrderedPileupOutput},
+    params::PileupParams,
+    pileup_iterator::{PileupIterator, PileupIteratorCore},
+    refseq::RefSeqHandle,
+    utils::OutputWriter,
     PileupCoordinate,
 };
 
@@ -72,7 +78,7 @@ impl PileupWorker {
         id: usize,
         params: PileupParams,
         job: IntervalJob,
-        src: BamDataSource,
+        src: Vec<BamDataSource>,
         refseq: RefSeqHandle,
     ) where
         T: OrderedPileupOutput + 'static,
@@ -84,13 +90,12 @@ impl PileupWorker {
             notify.mark_running();
 
             let mut out = OutputWriter::new(&job.out, BUFWRITER_CAP, false, false).unwrap();
-            let mut iterator = PileupIteratorCore::<T>::new(&src, refseq, &params).unwrap();
-            iterator.set_ref(&job.interval).expect("Failed to set thread interval");
 
-            while let Some(iter) = iterator.step() {
-                if let PileupCoordinate::Coverage(plp) = iter.expect("Pileup failed") {
-                    plp.write(&mut out.get()).expect("pileup writing failed")
-                }
+            let mut iterator = PileupIterator::<T>::from_query(&src, refseq, &job.interval, &params)
+                .expect("Failed to initalize thread pileup iterator");
+
+            while iterator.advance().expect("pileup failed").is_some() {
+                write_multiple_outputs(&iterator.ctx(), iterator.current(), out.get()).expect("error writing");
             }
 
             out.flush().expect("Failed to flush thread writer");

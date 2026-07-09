@@ -1,5 +1,9 @@
 use crate::errors::{Error, ErrorKind};
-use crate::{alignment::PileupAlignment, output::OrderedPileupOutput, refseq::RefSeqHandle};
+use crate::{
+    alignment::PileupAlignment,
+    output::{OrderedPileupOutput, PileupOutputContext},
+    refseq::RefSeqHandle,
+};
 use indexmap::IndexMap;
 use rust_htslib::bam::record::Cigar;
 use std::ops::AddAssign;
@@ -28,9 +32,6 @@ use std::ops::AddAssign;
 ///  In column 11, the first insertion has sequence GTTAAC and was observed 2x
 /// ```
 pub struct BaseDepthString {
-    tid: i32,
-    pos: i64,
-    ref_name: String,
     depth: u32,
     a: u32,
     g: u32,
@@ -47,33 +48,27 @@ unsafe impl Sync for BaseDepthString {}
 unsafe impl Send for BaseDepthString {}
 
 impl OrderedPileupOutput for BaseDepthString {
-    fn tid(&self) -> i32 {
-        self.tid
-    }
-
-    fn pos(&self) -> i64 {
-        self.pos
-    }
-
-    fn set_ref_info(&mut self, tid: i32, pos: i64, ref_name: &str, _ref_seq: &RefSeqHandle) {
-        self.update(tid, pos, ref_name);
+    #[inline(always)]
+    fn intake(&mut self, ctx: &PileupOutputContext, p: &PileupAlignment) -> Result<(), Error> {
+        self.depth += 1;
+        self.register_pileup(p, ctx.refseq, ctx.pos)
     }
 
     #[inline(always)]
-    fn intake(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
-        self.intake(p, refseq)
-    }
-
-    #[inline(always)]
-    fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
+    fn write_header<W: std::io::Write>(ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
 
-        writer.write_all(self.ref_name.as_bytes())?;
+        writer.write_all(ctx.ref_name.as_bytes())?;
         writer.write_all(b"\t")?;
 
-        writer.write_all(buf.format(self.pos + 1).as_bytes())?;
+        writer.write_all(buf.format(ctx.pos + 1).as_bytes())?;
         writer.write_all(b"\t")?;
+        Ok(())
+    }
 
+    #[inline(always)]
+    fn write_body<W: std::io::Write>(&self, _ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
+        let mut buf = itoa::Buffer::new();
         writer.write_all(buf.format(self.depth).as_bytes())?;
         writer.write_all(b"\t")?;
 
@@ -120,8 +115,12 @@ impl OrderedPileupOutput for BaseDepthString {
         }
 
         write!(writer, "]")?;
-        writeln!(writer)?;
+        Ok(())
+    }
 
+    #[inline(always)]
+    fn write_body_empty<W: std::io::Write>(_ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
+        writer.write_all(b"0\t0\t0\t0\t0\t0\t0\t0\t[]\t[]")?;
         Ok(())
     }
 
@@ -153,9 +152,6 @@ impl OrderedPileupOutput for BaseDepthString {
 impl BaseDepthString {
     pub fn new() -> Self {
         Self {
-            tid: 0,
-            pos: 0,
-            ref_name: "".to_string(),
             a: 0,
             g: 0,
             c: 0,
@@ -169,22 +165,14 @@ impl BaseDepthString {
         }
     }
 
-    pub fn update(&mut self, tid: i32, ref_pos: i64, ref_name: &str) {
-        self.tid = tid;
-        self.pos = ref_pos;
-        if self.ref_name != ref_name {
-            self.ref_name = ref_name.to_string()
-        }
-    }
-
     #[inline(always)]
-    pub fn intake(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
+    pub fn intake(&mut self, ctx: &PileupOutputContext, p: &PileupAlignment) -> Result<(), Error> {
         self.depth += 1;
-        self.register_pileup(p, refseq)
+        self.register_pileup(p, ctx.refseq, ctx.pos)
     }
 
     #[inline(always)]
-    pub fn register_pileup(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
+    pub fn register_pileup(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle, pos: i64) -> Result<(), Error> {
         match p.del {
             false => {
                 let readbase = if p.qpos < p.rec.seq_len() {
@@ -230,7 +218,7 @@ impl BaseDepthString {
 
             for i in 1..=del_len as usize {
                 refbase = if let Some(refseq) = refseq.as_ref() {
-                    refseq[self.pos as usize + i]
+                    refseq[pos as usize + i]
                 } else {
                     b'N'
                 };

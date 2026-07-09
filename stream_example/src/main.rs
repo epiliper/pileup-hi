@@ -3,7 +3,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod args;
 
-use pileuphi_lib::{PileupCoordinate, PileupEngine, PileupStream, outputs::PileupString};
+use pileuphi_lib::{PileupCoordinate, PileupEngine, PileupStream, outputs::PileupString, write_multiple_outputs};
 
 use crate::args::parse_or_quit;
 
@@ -18,11 +18,8 @@ fn main() {
     let iters = stream.get_iter(params.inp).expect("Failed to get iterator");
 
     for mut iter in iters {
-        while let Some(b) = iter.advance() {
-            match b.expect("Error during pileup generation") {
-                PileupCoordinate::NoCoverage => (),
-                PileupCoordinate::Coverage(b) => b.write(&mut std::io::stdout()).unwrap(),
-            }
+        while iter.advance().expect("error during pileup generation").is_some() {
+            write_multiple_outputs(&iter.ctx(), iter.current(), &mut std::io::stdout()).expect("Error writing");
         }
     }
 }
