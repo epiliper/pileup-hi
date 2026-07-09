@@ -3,7 +3,7 @@ use rust_htslib::bam::{
     Record,
 };
 
-use std::{cell::RefCell, rc::Rc};
+use std::cell::UnsafeCell;
 
 pub const CIGAR_STATE_UNINIT: usize = usize::MAX - 10;
 
@@ -36,7 +36,23 @@ impl PileupAlignment {
     }
 }
 
-pub type PileupAlignmentRef = Rc<RefCell<PileupAlignment>>;
+// pub type PileupAlignmentRef = Rc<UnsafeCell<PileupAlignment>>;
+pub struct PileupAlignmentRef {
+    value: UnsafeCell<PileupAlignment>,
+}
+
+impl PileupAlignmentRef {
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get(&self) -> &mut PileupAlignment {
+        &mut (*self.value.get())
+    }
+
+    pub fn new(plp: PileupAlignment) -> Self {
+        Self {
+            value: UnsafeCell::new(plp),
+        }
+    }
+}
 
 pub struct CigarState {
     pub cig: CigarStringView,

@@ -119,6 +119,8 @@ impl IntervalJobs {
                     }
                 }
             }
+
+            main_writer.flush().expect("Failed to flush merge writer");
         });
 
         Self { map, handle, queue, s }

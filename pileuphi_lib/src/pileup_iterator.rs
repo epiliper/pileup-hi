@@ -13,7 +13,6 @@ use crate::{
     utils::read_ends_before_pos,
 };
 
-use likely_stable::if_likely;
 use rust_htslib::bam::Record;
 
 #[derive(Clone)]
@@ -62,6 +61,8 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
     /// Create a new pileup iterator from a data source (e.g. bam file), a set of query regions,
     /// input params and an output type.
     pub fn new(src: &BamDataSource, refseq: RefSeqHandle, params: &PileupParams) -> Result<Self, Error> {
+        let read_len = BamReader::sample_read_len(src)?;
+
         let reader = BamReader::new(src, MIN_BAM_READ_THREADS)?;
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
@@ -104,7 +105,7 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
             min_mapq,
             realign: !params.no_baq,
             redo_baq: params.redo_baq,
-            read_len: 0,
+            read_len,
         })
     }
 
@@ -378,7 +379,7 @@ pub enum IterResult {
 /// Perform the pileup given a read buffer, optional ref sequence, an output destination, and query
 /// position. Importantly, reads found to no longer overlap (pos, tid) will be removed from the
 /// buffer.
-pub fn generate_pileup<T: OrderedPileupOutput>(
+fn generate_pileup<T: OrderedPileupOutput>(
     rbuf: &mut ReadBuffer,
     refseq: &RefSeqHandle,
     out: &mut T,
@@ -395,39 +396,38 @@ pub fn generate_pileup<T: OrderedPileupOutput>(
             ReadBufferEntry::Occupied(_plp) => plp = _plp,
         }
 
-        let mut r = plp.borrow_mut();
+        unsafe {
+            let r = plp.get();
 
-        // record starts beyond position, which means that the remainder of the buffer does
-        // too. Skip the rest of the records.
-        if r.rec.tid() > tid || (r.rec.pos() > pos && r.rec.tid() == tid) {
-            drop(r);
-            break;
+            // record starts beyond position, which means that the remainder of the buffer does
+            // too. Skip the rest of the records.
+            if r.rec.tid() > tid || (r.rec.pos() > pos && r.rec.tid() == tid) {
+                // drop(r);
+                break;
+            }
+
+            // record is old and no longer overlaps the query coordinate. We discard it by not adding
+            // it to the alternate buffer.
+            if read_ends_before_pos(r, pos) || r.rec.tid() < tid {
+                rbuf.remove(idx);
+                continue;
+            }
+
+            generated = true;
+
+            // advance to the current ref position in read and record cigar op
+            resolve_cigar(r, pos);
+            let qual = *r.rec.qual().get(r.qpos).unwrap_or(&0);
+
+            if qual < min_baseq {
+                continue;
+            }
+
+            out.intake(r, refseq)?;
         }
-
-        // record is old and no longer overlaps the query coordinate. We discard it by not adding
-        // it to the alternate buffer.
-        if read_ends_before_pos(&r, pos) || r.rec.tid() < tid {
-            rbuf.remove(idx);
-            continue;
-        }
-
-        generated = true;
-
-        // advance to the current ref position in read and record cigar op
-        resolve_cigar(&mut r, pos);
-        let qual = *r.rec.qual().get(r.qpos).unwrap_or(&0);
-
-        if qual < min_baseq {
-            drop(r);
-            continue;
-        }
-
-        out.intake(&r, refseq)?;
-
-        drop(r);
     }
 
-    rbuf.reset();
+    rbuf.reset()?;
     Ok(generated)
 }
 
