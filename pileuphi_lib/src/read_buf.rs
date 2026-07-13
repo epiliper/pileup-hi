@@ -59,7 +59,7 @@ fn rbuf_first(rbuf: &[ReadBufferEntry]) -> Option<&PileupAlignmentRef> {
 
 #[inline(always)]
 fn rbuf_last(rbuf: &[ReadBufferEntry]) -> Option<&PileupAlignmentRef> {
-    for entry in rbuf {
+    for entry in rbuf.iter().rev() {
         match entry {
             ReadBufferEntry::Tombstone => continue,
 

@@ -190,7 +190,7 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
         self.max_pos = interval.start - 1;
 
         self.tid = interval.tid as i32;
-        self.next_tid = -1; // make the step() check until max_pos is hit
+        self.next_tid = self.tid;
 
         self.reader.init_to_ref(interval.tid as u32, self.pos, interval.end)?;
 
@@ -284,6 +284,7 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
                 // we passed queried region
                 if r.pos() > self.max_pos {
                     self.rbuf.attempt_push(self.tid, self.pos, r)?;
+                    self.next_pos = r.pos();
                     return Ok(IterResult::ReferenceEnd);
                 }
 
