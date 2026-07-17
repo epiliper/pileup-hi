@@ -126,6 +126,17 @@ impl BamReader {
         })
     }
 
+    pub fn name_to_tid(&self, name: &str) -> Result<Option<i32>, Error> {
+        for (i, bytes) in self.header.target_names().iter().enumerate() {
+            let cur = std::str::from_utf8(bytes)?;
+            if cur == name {
+                return Ok(Some(i as i32));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn sample_read_len(src: &BamDataSource) -> Result<usize, Error> {
         let mut reader = Self::new(src, 1)?; // 1 thread
         let mut cached = Record::new();

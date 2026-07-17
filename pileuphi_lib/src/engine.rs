@@ -2,22 +2,18 @@ use crate::{
     bamio::{BamDataSource, BamReader, OutputDataDest},
     errors::{Error, ErrorKind},
     jobqueue::IntervalJobs,
-    output::OrderedPileupOutput,
+    output::{write_multiple_outputs, OrderedPileupOutput},
     params::{InputParams, PileupParams},
-    pileup_iterator::{PileupIterator, PileupIteratorCore},
+    pileup_iterator::PileupIterator,
     position_queue::{create_region_queue, intervals_from_header, GenomeInterval},
     refseq::{RefSeq, RefSeqHandle},
     threading::ThreadPool,
     utils::OutputWriter,
-    PileupCoordinate,
 };
 
 use log::{info, warn};
+use std::marker::PhantomData;
 use std::sync::Arc;
-use std::{
-    cell::{Ref, RefCell},
-    marker::PhantomData,
-};
 
 pub const BUFWRITER_CAP: usize = 2 * 1024 * 1024;
 pub const MIN_BAM_READ_THREADS: usize = 2;
@@ -29,14 +25,18 @@ pub const MIN_COORDS_PER_THREAD: i64 = 250_000;
 
 struct PileupEngineQuery {
     intervals: Vec<GenomeInterval>,
-    src: BamDataSource,
+    src: Vec<BamDataSource>,
 }
 
 impl TryFrom<InputParams> for PileupEngineQuery {
     type Error = Error;
     fn try_from(value: InputParams) -> Result<Self, Error> {
-        let src = BamDataSource::from_string(&value.file)?;
-        let tempreader = BamReader::new(&src, 1)?;
+        let mut src = Vec::with_capacity(value.file.len());
+        for file in value.file {
+            src.push(BamDataSource::from_string(&file)?);
+        }
+
+        let tempreader = BamReader::new(&src[0], 1)?;
         let header = &tempreader.header;
 
         let intervals = if let Some(region) = value.regions {
@@ -50,78 +50,16 @@ impl TryFrom<InputParams> for PileupEngineQuery {
 }
 
 pub struct PileupEngine<T: OrderedPileupOutput> {
-    query: Option<RefCell<PileupEngineQuery>>,
     plp_params: PileupParams,
     _t: PhantomData<T>,
-    dest: Option<OutputDataDest>,
-    threads: usize,
     refseq: Option<RefSeq>,
-}
-
-/// An interface to generate pileups in memory, not writing to file. Single-threaded; parallelism is left up to the user.
-pub struct PileupStream<T: OrderedPileupOutput + 'static> {
-    engine: PileupEngine<T>,
-}
-
-impl<T: OrderedPileupOutput + 'static> PileupStream<T> {
-    /// Return an iterator of pileups across the coordinates of the input regions specified. One iterator will be returned per region.
-    pub fn get_iter(&mut self, input: InputParams) -> Result<Vec<PileupIterator<T>>, Error> {
-        self.engine.submit(input)?;
-        self.engine.yield_iterator()
-    }
-}
-
-/// A pileup engine used to emit to files. Mulithreaded.
-pub struct PileupSink<T: OrderedPileupOutput + 'static> {
-    engine: PileupEngine<T>,
-}
-
-impl<T: OrderedPileupOutput + 'static> PileupSink<T> {
-    /// Tell the engine to run over the specified input region
-    pub fn submit(&mut self, input: InputParams) -> Result<(), Error> {
-        self.engine.submit(input)
-    }
-
-    /// Run the engine (this function blocks)
-    pub fn run(&self) -> Result<(), Error> {
-        self.engine._run()
-    }
 }
 
 ///////////////////////////////////////////////////////////////
 
 impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
-    fn submit(&mut self, input: InputParams) -> Result<(), Error> {
-        self.query = Some(RefCell::new(input.try_into()?));
-        Ok(())
-    }
-
-    fn get_query(&self) -> Option<Ref<'_, PileupEngineQuery>> {
-        self.query.as_ref().map(|b| b.borrow())
-    }
-
-    fn yield_iterator(&self) -> Result<Vec<PileupIterator<T>>, Error> {
-        if let Some(query) = self.get_query() {
-            let mut ret = Vec::with_capacity(query.intervals.len());
-
-            for interval in query.intervals.iter() {
-                let mut _iterator =
-                    PileupIteratorCore::new(&query.src, self.get_refseq(&query.intervals[0].name)?, &self.plp_params)?;
-
-                _iterator.set_ref(interval)?;
-
-                ret.push(PileupIterator::from_iterator(_iterator))
-            }
-
-            Ok(ret)
-        } else {
-            Err(Error::from(ErrorKind::BadInputRegions(
-                "user asked for iterator but no regions were loaded with submit()".to_string(),
-            )))
-        }
-    }
-
-    fn init_core(plp_params: PileupParams) -> Result<PileupEngine<T>, Error> {
+    /// Create a reusable pileup engine with the given generation parameters.
+    pub fn new(plp_params: PileupParams) -> Result<Self, Error> {
         let refseq = if let Some(ref fasta) = plp_params.refseq {
             if !std::fs::exists(std::path::Path::new(fasta))? {
                 return Err(Error::from(ErrorKind::IOError(std::io::Error::new(
@@ -135,63 +73,69 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
         };
 
         Ok(Self {
-            query: None,
             plp_params,
             _t: PhantomData,
-            dest: None,
-            threads: 1,
             refseq,
         })
     }
 
-    /// Return an engine for iterating over records via the advance() API.
-    pub fn init_stream(plp_params: PileupParams) -> Result<PileupStream<T>, Error> {
-        Ok(PileupStream {
-            engine: Self::init_core(plp_params)?,
-        })
+    /// Return one pileup iterator per requested region.
+    pub fn iter(&self, input: InputParams) -> Result<Vec<PileupIterator<T>>, Error> {
+        let query: PileupEngineQuery = input.try_into()?;
+        let mut ret = Vec::with_capacity(query.intervals.len());
+
+        for interval in query.intervals.iter() {
+            ret.push(PileupIterator::from_query(
+                &query.src,
+                self.get_refseq(&interval.name)?,
+                interval,
+                &self.plp_params,
+            )?);
+        }
+
+        Ok(ret)
     }
 
-    /// Return an engine for writing to FILE, as opposed to memory. The number of threads dictates the number of regions processed in parallel.
-    pub fn init_sink(plp_params: PileupParams, output: &str, threads: usize) -> Result<PileupSink<T>, Error> {
-        assert!(threads > 0, "invalid number of threads passed: {}", threads);
-        let mut engine = Self::init_core(plp_params)?;
-        engine.threads = threads;
-        engine.dest = Some(OutputDataDest::from_string(output));
-        Ok(PileupSink { engine })
-    }
+    /// Generate pileups and write them to a file or stdout.
+    pub fn write(&self, input: InputParams, output: &str, threads: usize) -> Result<(), Error> {
+        if threads == 0 {
+            return Err(Error::from(ErrorKind::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "thread count must be greater than zero",
+            ))));
+        }
 
-    fn _run(&self) -> Result<(), Error> {
-        if let Some(query) = self.get_query() {
-            // remove old output file if it exists.
-            if let OutputDataDest::File(ref f) = self.dest.as_ref().unwrap() {
-                if std::fs::exists(f)? {
-                    warn!("Output file {} already exists! Overwriting...", f);
+        let query: PileupEngineQuery = input.try_into()?;
+        let dest = OutputDataDest::from_string(output);
 
-                    if let Err(e) = std::fs::remove_file(f) {
-                        warn!("Failed to remove file {f}; {e}. Output will be appended...");
-                    };
-                }
+        if let OutputDataDest::File(ref f) = dest {
+            if std::fs::exists(f)? {
+                warn!("Output file {} already exists! Overwriting...", f);
+
+                if let Err(e) = std::fs::remove_file(f) {
+                    warn!("Failed to remove file {f}; {e}. Output will be appended...");
+                };
             }
+        }
 
-            if query.src.has_index()? {
-                info!("Found index for for input file {}", query.src.fname()?);
-            }
+        let index_found = query.src.iter().all(|f| f.has_index().unwrap_or(false));
 
-            if self.threads == 1 {
-                self.run_all_1t()?;
-            } else if !query.src.has_index()? {
-                warn!(
-                    "User asked for more than {} threads but file is unindexed. Running in single-thread mode...",
-                    self.threads
-                );
-                self.run_all_1t()?;
-            } else {
-                info!("Running with {} threads...", self.threads);
-                self.run_all_par()?;
-            }
-        };
+        if index_found {
+            info!("Found index for for input files");
+        }
 
-        Ok(())
+        if threads == 1 {
+            self.run_all_1t(&query, &dest)
+        } else if !index_found {
+            warn!(
+                "User asked for more than {} threads but at least one input file is unindexed. Running in single-threaded mode",
+                threads
+            );
+            self.run_all_1t(&query, &dest)
+        } else {
+            info!("Running with {} threads...", threads);
+            self.run_all_par(&query, &dest, threads)
+        }
     }
 
     fn get_refseq(&self, ref_name: &str) -> Result<RefSeqHandle, Error> {
@@ -203,82 +147,74 @@ impl<T: OrderedPileupOutput + 'static> PileupEngine<T> {
     }
 
     /// Use a single thread for both processing and writing.
-    fn run_all_1t(&self) -> Result<(), Error> {
-        if let Some(ref query) = self.get_query() {
-            for interval in query.intervals.iter() {
-                let mut main_writer = OutputWriter::new(self.dest.as_ref().unwrap(), BUFWRITER_CAP, true, false)?;
-                let refseq_handle = self.get_refseq(&interval.name)?;
+    fn run_all_1t(&self, query: &PileupEngineQuery, dest: &OutputDataDest) -> Result<(), Error> {
+        for interval in query.intervals.iter() {
+            let mut main_writer = OutputWriter::new(dest, BUFWRITER_CAP, true, false)?;
 
-                let mut iterator = PileupIteratorCore::<T>::new(&query.src, refseq_handle, &self.plp_params)?;
-                iterator.set_ref(interval)?;
+            let mut iterator = PileupIterator::<T>::from_query(
+                &query.src,
+                self.get_refseq(&interval.name)?,
+                interval,
+                &self.plp_params,
+            )?;
 
-                while let Some(iter) = iterator.step() {
-                    if let PileupCoordinate::Coverage(plp) = iter? {
-                        plp.write(&mut main_writer.get())?
-                    }
-                }
-
-                main_writer.flush()?;
+            while iterator.advance()?.is_some() {
+                write_multiple_outputs(&iterator.ctx(), iterator.current(), main_writer.get())?;
             }
+
+            main_writer.flush()?;
         }
         Ok(())
     }
 
     /// Split up a list of input genomic intervals into smaller chunks to be processed in parallel. Chunks are first written to temporary output files before being merged into the user-specified output file.
-    fn run_all_par(&self) -> Result<(), Error> {
-        if let Some(query) = self.get_query() {
-            // if we choose to limit read buffers to a given depth, then we need to process at least
-            // one entire reference per thread: we can't split up references into sub-chunks per
-            // thread.
-            //
-            // This is because the reads entering buffers at
-            // coordinate x are contingent on the reads that entered in coordinate x - 1, x - 2, and
-            // so on. If we wanted to get the same output with depth-limited buffers with multiple
-            // threads, each thread would have to go through the entire ENTIRE reference, which
-            // defeats the point of multithreading.
-            //
-            // I'm going to go with this constraint for now since we need to remain identical to
-            // samtools mpileup output.
+    fn run_all_par(&self, query: &PileupEngineQuery, dest: &OutputDataDest, threads: usize) -> Result<(), Error> {
+        // if we choose to limit read buffers to a given depth, then we need to process at least
+        // one entire reference per thread: we can't split up references into sub-chunks per
+        // thread.
+        //
+        // This is because the reads entering buffers at
+        // coordinate x are contingent on the reads that entered in coordinate x - 1, x - 2, and
+        // so on. If we wanted to get the same output with depth-limited buffers with multiple
+        // threads, each thread would have to go through the entire ENTIRE reference, which
+        // defeats the point of multithreading.
+        //
+        // I'm going to go with this constraint for now since we need to remain identical to
+        // samtools mpileup output.
 
-            let sub_ref_split_strat = if self.plp_params.depth != 0 && !self.plp_params.lax_depth {
-                warn!("Depth was bound to {}, so one thread will be used per reference. For generally faster sub-reference threading, either set depth to 0 (disable) or enable lax_depth.", self.plp_params.depth);
-                None
-            } else {
-                Some(self.plp_params.coords_per_thread)
-            };
+        let sub_ref_split_strat = if self.plp_params.depth != 0 && !self.plp_params.lax_depth {
+            warn!("Depth was bound to {}, so one thread will be used per reference. For generally faster sub-reference threading, either set depth to 0 (disable) or enable lax_depth.", self.plp_params.depth);
+            None
+        } else {
+            Some(self.plp_params.coords_per_thread)
+        };
 
-            // let sub_ref_split_strat = Some(self.plp_params.coords_per_thread);
+        // let sub_ref_split_strat = Some(self.plp_params.coords_per_thread);
 
-            let mut jobs = IntervalJobs::new(
-                &query.intervals,
-                sub_ref_split_strat,
-                self.threads as i64,
-                self.dest.as_ref().unwrap().clone(),
-            );
+        let mut jobs = IntervalJobs::new(&query.intervals, sub_ref_split_strat, threads as i64, dest.clone());
 
-            // if we just get one job after splitting, just use one thread.
-            if jobs.queue.len() == 1 {
-                return self.run_all_1t();
-            }
+        // if we just get one job after splitting, just use one thread.
+        if jobs.queue.len() == 1 {
+            return self.run_all_1t(query, dest);
+        }
 
-            let mut pool = ThreadPool::new(self.threads);
-            let mut n_jobs = 0;
+        let mut pool = ThreadPool::new(threads);
+        let mut n_jobs = 0;
 
-            while !jobs.is_completed() {
-                jobs.merge_completed()?;
+        while !jobs.is_completed() {
+            jobs.merge_completed()?;
 
-                if let Some(worker) = pool.get_available() {
-                    if let Some(job) = jobs.queue.pop_front() {
-                        n_jobs += 1;
+            if let Some(worker) = pool.get_available() {
+                if let Some(job) = jobs.queue.pop_front() {
+                    n_jobs += 1;
 
-                        let refseq_handle = self.get_refseq(&job.interval.name)?;
+                    let refseq_handle = self.get_refseq(&job.interval.name)?;
 
-                        worker.run::<T>(n_jobs, self.plp_params.clone(), job, query.src.clone(), refseq_handle);
-                    }
+                    worker.run::<T>(n_jobs, self.plp_params.clone(), job, query.src.clone(), refseq_handle);
                 }
             }
-            jobs.conclude()?;
-        };
+        }
+        jobs.conclude()?;
         Ok(())
     }
 }
