@@ -1,6 +1,6 @@
 use crate::alignment::PileupAlignment;
 use crate::errors::Error;
-use crate::output::OrderedPileupOutput;
+use crate::output::{OrderedPileupOutput, PileupOutputContext};
 use crate::refseq::RefSeqHandle;
 use rust_htslib::bam::record::Cigar;
 use std::io::Write;
@@ -19,10 +19,6 @@ const R_REFSKIP: u8 = b'<';
 pub struct PileupString {
     seqbuf: Vec<u8>,
     qualbuf: Vec<u8>,
-    tid: i32,
-    ref_name: String,
-    ref_pos: i64,
-    ref_base: u8,
     pub depth: u32,
 }
 
@@ -30,34 +26,41 @@ unsafe impl Send for PileupString {}
 unsafe impl Sync for PileupString {}
 
 impl OrderedPileupOutput for PileupString {
-    fn tid(&self) -> i32 {
-        self.tid
+    #[inline(always)]
+    fn intake(&mut self, ctx: &PileupOutputContext, p: &PileupAlignment) -> Result<(), Error> {
+        self.depth += 1;
+        write_plp(p, ctx.pos, &mut self.seqbuf, &mut self.qualbuf, ctx.refseq)?;
+        Ok(())
     }
 
-    fn pos(&self) -> i64 {
-        self.ref_pos
+    #[inline(always)]
+    fn write_header<W: std::io::Write>(ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
+        Self::write_refinfo(ctx, writer)
     }
 
-    fn set_ref_info(&mut self, tid: i32, pos: i64, ref_name: &str, ref_seq: &RefSeqHandle) {
-        self.update(tid, pos, ref_name, ref_seq);
+    #[inline(always)]
+    fn write_body<W: std::io::Write>(&self, _ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
+        self.write_body(writer)?;
+
+        Ok(())
     }
 
-    fn intake(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
-        self.intake(p, refseq)
+    fn write_body_empty<W: std::io::Write>(_ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
+        writer.write_all(b"0\t*\t*")?;
+        Ok(())
     }
 
-    fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
-        self.write(writer)
-    }
-
+    #[inline(always)]
     fn depth(&self) -> u32 {
         self.depth
     }
 
+    #[inline(always)]
     fn new() -> Self {
         Self::new()
     }
 
+    #[inline(always)]
     fn clear(&mut self) {
         self.depth = 0;
         self.seqbuf.clear();
@@ -66,65 +69,42 @@ impl OrderedPileupOutput for PileupString {
 }
 
 impl PileupString {
-    pub fn update(&mut self, tid: i32, ref_pos: i64, ref_name: &str, ref_seq: &RefSeqHandle) {
-        self.tid = tid;
-        self.ref_pos = ref_pos;
+    fn write_refinfo<W: std::io::Write>(ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
+        let mut buf = itoa::Buffer::new();
+        writer.write_all(ctx.ref_name.as_bytes())?;
+        writer.write_all(b"\t")?;
 
-        self.ref_base = if let Some(seq) = ref_seq.as_ref() {
-            *seq.get(ref_pos as usize).unwrap_or(&b'N')
+        writer.write_all(buf.format(ctx.pos + 1).as_bytes())?;
+        writer.write_all(b"\t")?;
+
+        let ref_base = if let Some(seq) = ctx.refseq.as_ref() {
+            *seq.get(ctx.pos as usize).unwrap_or(&b'N')
         } else {
             b'N'
         };
 
-        if self.ref_name != ref_name {
-            self.ref_name = ref_name.to_string();
-        }
-    }
-
-    #[inline(always)]
-    pub fn intake(&mut self, p: &PileupAlignment, refseq: &RefSeqHandle) -> Result<(), Error> {
-        self.depth += 1;
-        write_plp(p, self.ref_pos, &mut self.seqbuf, &mut self.qualbuf, refseq)?;
+        writer.write_all(&[ref_base])?;
+        writer.write_all(b"\t")?;
         Ok(())
     }
 
-    #[inline(always)]
-    pub fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
+    fn write_body<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
-        // print! {"{}\t{}\t{}\t{}\t", self.ref_name, self.ref_pos + 1, char::from(self.ref_base), self.depth }
-        writer.write_all(self.ref_name.as_bytes())?;
-        writer.write_all(b"\t")?;
-
-        writer.write_all(buf.format(self.ref_pos + 1).as_bytes())?;
-        writer.write_all(b"\t")?;
-
-        writer.write_all(&[self.ref_base])?;
-        writer.write_all(b"\t")?;
-
         writer.write_all(buf.format(self.depth).as_bytes())?;
         writer.write_all(b"\t")?;
 
         if self.seqbuf.is_empty() {
-            // write!(writer, "*\t")?
             writer.write_all(b"*\t")?
-            // print! {"*\t"}
         } else {
-            // write!(writer, "{}\t", std::str::from_utf8_unchecked(&self.seqbuf))?;
             writer.write_all(&self.seqbuf)?;
             writer.write_all(b"\t")?;
-            // print! {"{}\t", std::str::from_utf8(&self.seqbuf)?}
         }
 
         if self.qualbuf.is_empty() {
-            // write!(writer, "*")?
             writer.write_all(b"*")?;
         } else {
-            // print! {"{}", std::str::from_utf8(&self.qualbuf)?}
-            // unsafe { write!(writer, "{}", std::str::from_utf8_unchecked(&self.qualbuf))? }
             writer.write_all(&self.qualbuf)?;
         }
-
-        writeln!(writer)?;
 
         Ok(())
     }
@@ -132,11 +112,7 @@ impl PileupString {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            tid: 0,
-            ref_pos: 0,
-            ref_base: 0,
             depth: 0,
-            ref_name: "".to_string(),
             qualbuf: Vec::new(),
             seqbuf: Vec::new(),
         }

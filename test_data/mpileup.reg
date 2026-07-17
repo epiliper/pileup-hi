@@ -53,8 +53,7 @@ P 7.out pileuphi plp -t $threads -Q0 -x -f c1.fa c1#pad2.bam
 # # Test basic pileup options
 P 13.out pileuphi plp -t $threads -x mpileup.1.$fmt
 
-# commenting these out, don't support file lists
-# P 14.out pileuphi plp -t $threads -x mpileup.[123].$fmt
+P 14.out pileuphi plp -t $threads -x mpileup.1.bam mpileup.2.bam mpileup.3.bam
 # P 15.out ls -1 mpileup.[123].$fmt > 15.list.tmp; $pileuphi -plp -x -b 15.list.tmp
 
 P 16.out pileuphi plp -t $threads -x -f mpileup.ref.fa mpileup.1.$fmt
@@ -137,19 +136,21 @@ P 47.out pileuphi plp -x -d 8500 -B -f mpileup.ref.fa deep.sam|$awk '{print $4}'
 P a0.out  pileuphi plp -t $threads -Q40 -r 17:1-4200 -f mpileup.ref.fa -a mpileup.1.$fmt
 P a1.out  pileuphi plp -t $threads -ABQ0 -a  xx#depth1.sam
 P a2.out  pileuphi plp -t $threads -ABQ0 -a  xx#depth2.sam
-# P a3.out  pileuphi plp -t $threads -ABQ0 -a  xx#depth1.sam xx#depth2.sam
+P a3.out  pileuphi plp -t $threads -ABQ0 -a  xx#depth1.sam xx#depth2.sam
+P mismatched_tid.out pileuphi plp -t $threads -ABQ0 xx#depth3.sam xx#depth2.sam
+P mismatched_tid.out pileuphi plp -t $threads -ABQ0 xx#depth3.bam xx#depth2.bam
 P a4.out  pileuphi plp -t $threads -ABQ0 --aa xx#depth1.sam
 P a5.out  pileuphi plp -t $threads -ABQ0 --aa xx#depth2.sam
-# P a6.out  pileuphi plp -t $threads -ABQ0 --aa xx#depth1.sam xx#depth2.sam
+P a6.out  pileuphi plp -t $threads -ABQ0 --aa xx#depth1.sam xx#depth2.sam
 
 # # -a with regions / bed
-# P a8.out  $samtools mpileup -ABQ0 -a -r xx:5-16 xx#depth1.bam xx#depth2.bam
+P a8.out  pileuphi plp -t $threads -ABQ0 -a -r xx:5-16 xx#depth1.bam xx#depth2.bam
 # P a9.out  $samtools mpileup -ABQ0 -a -l xx.bed  xx#depth1.bam xx#depth2.bam
-# P a10.out $samtools mpileup -ABQ0 -a -r xx:8-13 xx#depth1.bam xx#depth2.bam
+P a10.out pileuphi plp -t $threads -ABQ0 -a -r xx:8-13 xx#depth1.bam xx#depth2.bam
 # P a11.out $samtools mpileup -ABQ0 -a -l xx.bed2 xx#depth1.bam xx#depth2.bam
 
 # # -aa with regions/bed
-# P a13.out $samtools mpileup -ABQ0 -a -a -r xx:5-16 xx#depth1.bam xx#depth2.bam
+P a13.out pileuphi plp -t $threads -ABQ0 --aa -r xx:5-16 xx#depth1.bam xx#depth2.bam
 # P a14.out $samtools mpileup -ABQ0 -a -a -l xx.bed  xx#depth1.bam xx#depth2.bam
 
 # # -a with additional columns (-s and -O)

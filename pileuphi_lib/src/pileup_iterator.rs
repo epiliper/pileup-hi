@@ -4,7 +4,7 @@ use crate::{
     cigar_resolve::resolve_cigar,
     engine::MIN_BAM_READ_THREADS,
     errors::{Error, ErrorKind},
-    output::{OrderedPileupOutput, PileupCoordinate},
+    output::{OrderedPileupOutput, PileupOutputContext},
     params::PileupParams,
     position_queue::GenomeInterval,
     read_buf::{BufPushResult, ReadBuffer, ReadBufferEntry},
@@ -44,7 +44,10 @@ pub struct PileupIteratorCore<T: OrderedPileupOutput> {
     emit: EmitStrategy,
 
     rbuf: ReadBuffer,
+
     dest: T,
+    emit_current: bool,
+
     pub reader: BamReader,
     refseq: RefSeqHandle,
     read_filter: ReadFilter,
@@ -96,6 +99,7 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
             max_pos,
             rbuf,
             dest,
+            emit_current: false,
             emit,
             reader,
             read_filter,
@@ -109,11 +113,21 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
         })
     }
 
+    #[inline(always)]
+    pub fn is_exhausted(&self) -> bool {
+        self.tid == -1
+    }
+
+    #[inline(always)]
+    pub fn set_exhausted(&mut self) {
+        self.tid = -1;
+    }
+
     /// Generate a pileup from all bases passing the minimum quality filter and covering the
     /// iterator's current reference position. Importantly, generate_pileup() is where stale reads no longer
     /// overlapping the query position are removed.
     #[inline(always)]
-    pub fn set_pileup(&mut self) -> Result<PileupCoordinate<'_, T>, Error> {
+    pub fn set_pileup(&mut self) -> Result<(), Error> {
         let mut skip = false;
 
         // don't bother going through read buffer if it starts beyond the
@@ -134,11 +148,15 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
         {
             self.dest.clear();
 
-            self.dest
-                .set_ref_info(self.tid, self.pos, &self.reader.cur_ref, &self.refseq);
-
             if !skip {
-                generated = generate_pileup(rbuf, &self.refseq, &mut self.dest, self.pos, self.tid, self.min_baseq)?;
+                let ctx = PileupOutputContext {
+                    tid: self.tid,
+                    pos: self.pos,
+                    ref_name: &self.reader.cur_ref,
+                    refseq: &self.refseq,
+                };
+
+                generated = generate_pileup(rbuf, &mut self.dest, self.pos, self.tid, self.min_baseq, &ctx)?;
             } else {
                 generated = false;
             };
@@ -155,29 +173,24 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
         match self.emit {
             EmitStrategy::Nothing => {
                 self.dest.clear();
-                Ok(PileupCoordinate::NoCoverage)
+                self.emit_current = false;
             }
 
             EmitStrategy::ByPos => {
-                if generated || self.dest.depth() > 0 {
-                    Ok(PileupCoordinate::Coverage(&self.dest))
-                } else {
+                self.emit_current = generated || self.dest.depth() > 0;
+                if !self.emit_current {
                     self.dest.clear();
-                    Ok(PileupCoordinate::NoCoverage)
                 }
             }
 
             EmitStrategy::ByRef => {
-                if self.tid == self.last_tid_with_cov || self.rbuf.head.tid == self.tid {
-                    Ok(PileupCoordinate::Coverage(&self.dest))
-                } else {
-                    self.dest.clear();
-                    Ok(PileupCoordinate::NoCoverage)
-                }
+                self.emit_current = self.tid == self.last_tid_with_cov || self.rbuf.head.tid == self.tid;
             }
 
-            EmitStrategy::Everything => Ok(PileupCoordinate::Coverage(&self.dest)),
+            EmitStrategy::Everything => self.emit_current = true,
         }
+
+        Ok(())
     }
 
     /// When given a region not starting at zero, rewind by 2X read length in order to populate the
@@ -197,7 +210,7 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
         let preset = self.emit.clone();
         self.emit = EmitStrategy::Nothing;
 
-        while self.step().is_some() {
+        while self.step()?.is_some() {
             continue;
         }
 
@@ -212,36 +225,34 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
 
     /// Update iterator state and prepare ref-specific data given a new interval.
     pub fn set_ref(&mut self, interval: &GenomeInterval) -> Result<(), Error> {
-        if interval.tid >= self.reader.header.target_count() as i64 {
-            return Err(Error::from(ErrorKind::AnomalousData(format!(
-                "Interval has a reference index ({}) exceeding header maximum ({})",
-                interval.tid,
-                self.reader.header.target_count()
-            ))));
-        }
+        let tid = self.reader.name_to_tid(&interval.name)?.ok_or_else(|| {
+            Error::from(ErrorKind::AnomalousData(format!(
+                "Interval has a reference {} not in header",
+                interval.name
+            )))
+        })?;
+
+        let ctx = PileupOutputContext {
+            tid: self.tid,
+            pos: self.pos,
+            ref_name: &self.reader.cur_ref,
+            refseq: &self.refseq,
+        };
 
         // purge read buffer to remove any reads spanning the old ref to update head and tail.
-        generate_pileup(
-            &mut self.rbuf,
-            &self.refseq,
-            &mut self.dest,
-            i64::MAX,
-            self.tid,
-            self.min_baseq,
-        )?;
+        generate_pileup(&mut self.rbuf, &mut self.dest, i64::MAX, self.tid, self.min_baseq, &ctx)?;
 
         self.dest.clear();
 
         if interval.start != 0 && self.rbuf.overlap_map.is_some() {
             self.preload_region(interval)?;
         } else {
-            self.reader
-                .init_to_ref(interval.tid as u32, interval.start, interval.end)?;
+            self.reader.init_to_ref(tid as u32, interval.start, interval.end)?;
             self.pos = interval.start;
             self.next_pos = interval.start;
         }
 
-        self.tid = interval.tid as i32;
+        self.tid = tid;
         self.next_tid = self.tid;
 
         self.max_pos = interval.end - 1;
@@ -267,6 +278,11 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
                 let r = &mut self.cur_rec;
 
                 if r.is_unmapped() {
+                    continue;
+                }
+
+                // Unindexed readers start at the beginning of the file for each query.
+                if r.tid() < self.tid {
                     continue;
                 }
 
@@ -327,10 +343,11 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
         }
     }
 
-    pub fn step(&mut self) -> Option<Result<PileupCoordinate<'_, T>, Error>> {
+    pub fn step(&mut self) -> Result<Option<()>, Error> {
         loop {
             if self.pos > self.max_pos {
-                return None;
+                self.set_exhausted();
+                return Ok(None);
             }
 
             // we have already hit the end of the current reference.
@@ -340,9 +357,10 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
                     || matches!(self.emit, EmitStrategy::ByRef)
                     || matches!(self.emit, EmitStrategy::Everything)
                 {
-                    return Some(self.set_pileup());
+                    return Some(self.set_pileup()).transpose();
                 } else {
-                    return None; // we are done
+                    self.set_exhausted();
+                    return Ok(None); // we are done
                 }
             }
 
@@ -352,20 +370,21 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
                 || matches!(self.emit, EmitStrategy::Everything)
             {
                 if self.pos < self.next_pos {
-                    return Some(self.set_pileup());
+                    return Some(self.set_pileup()).transpose();
                 }
                 // or we don't, in which case we just jump ahead.
             } else {
                 self.pos = self.rbuf.head.pos;
 
                 if self.pos < self.next_pos {
-                    return Some(self.set_pileup());
+                    return Some(self.set_pileup()).transpose();
                 }
             }
 
             // we still need to sample more reads at this position
             if let Err(e) = self.intake() {
-                return Some(Err(e)); // propagate error if something goes wrong here.
+                self.set_exhausted();
+                return Some(Err(e)).transpose(); // propagate error if something goes wrong here.
             }
         }
     }
@@ -382,11 +401,11 @@ pub enum IterResult {
 /// buffer.
 fn generate_pileup<T: OrderedPileupOutput>(
     rbuf: &mut ReadBuffer,
-    refseq: &RefSeqHandle,
     out: &mut T,
     pos: i64,
     tid: i32,
     min_baseq: u8,
+    ctx: &PileupOutputContext,
 ) -> Result<bool, Error> {
     let mut generated = false;
     let mut plp;
@@ -424,7 +443,7 @@ fn generate_pileup<T: OrderedPileupOutput>(
                 continue;
             }
 
-            out.intake(r, refseq)?;
+            out.intake(ctx, r)?;
         }
     }
 
@@ -433,18 +452,133 @@ fn generate_pileup<T: OrderedPileupOutput>(
 }
 
 pub struct PileupIterator<T: OrderedPileupOutput> {
-    core: PileupIteratorCore<T>,
+    core: Vec<PileupIteratorCore<T>>,
+    tid: i32,
+    pos: i64,
+    output_tid: i32,
+    output_pos: i64,
+    pub max_pos: i64,
+    refseq: RefSeqHandle,
+    ref_name: String,
 }
 
-#[allow(type_alias_bounds)]
-pub type PileupIterResult<'a, T: OrderedPileupOutput> = Option<Result<PileupCoordinate<'a, T>, Error>>;
-
 impl<T: OrderedPileupOutput> PileupIterator<T> {
-    pub fn advance(&mut self) -> PileupIterResult<'_, T> {
-        self.core.step()
+    pub fn advance(&mut self) -> Result<Option<()>, Error> {
+        loop {
+            if self.pos > self.max_pos {
+                return Ok(None);
+            }
+
+            let output_tid = self.tid;
+            let output_pos = self.pos;
+            let mut next_pos: i64 = i64::MAX;
+
+            for iter in self.core.iter_mut() {
+                if iter.is_exhausted() {
+                    continue;
+                }
+
+                while !iter.is_exhausted() && iter.pos <= self.pos {
+                    iter.step()?;
+                }
+
+                next_pos = std::cmp::min(next_pos, iter.pos);
+            }
+
+            self.pos += 1;
+            if next_pos == i64::MAX {
+                return Ok(None);
+            }
+
+            let has_output = self
+                .core
+                .iter()
+                .any(|core| !core.is_exhausted() && core.pos == self.pos && core.emit_current);
+
+            if has_output {
+                self.output_tid = output_tid;
+                self.output_pos = output_pos;
+                return Ok(Some(()));
+            }
+        }
     }
 
-    pub fn from_iterator(iterator: PileupIteratorCore<T>) -> Self {
-        Self { core: iterator }
+    pub fn ctx(&self) -> PileupOutputContext<'_> {
+        PileupOutputContext {
+            tid: self.output_tid,
+            pos: self.output_pos,
+            ref_name: &self.ref_name,
+            refseq: &self.refseq,
+        }
+    }
+
+    pub fn current(&self) -> impl Iterator<Item = Option<&T>> {
+        self.core.iter().map(|core| {
+            if !core.is_exhausted() && core.pos == self.pos && core.emit_current {
+                Some(&core.dest)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn set_ref(&mut self, interval: &GenomeInterval) -> Result<(), Error> {
+        self.tid = interval.tid as i32;
+        self.pos = interval.start;
+        self.output_tid = -1;
+        self.output_pos = -1;
+        self.max_pos = interval.end - 1;
+
+        let mut valid = false;
+
+        for iter in self.core.iter_mut() {
+            // if we have a sample that doesn't contain the interval we want, just don't run it.
+            if iter.set_ref(interval).is_err() {
+                iter.set_exhausted();
+            } else {
+                valid = true;
+            }
+        }
+
+        // if no samples have the interval we asked for, then we consider this an anomaly and return
+        // an error.
+        if !valid {
+            return Err(Error::from(ErrorKind::AnomalousData(format!(
+                "Interval {:?} is not found in any input samples.",
+                interval
+            ))));
+        }
+
+        Ok(())
+    }
+
+    pub fn from_query(
+        src: &[BamDataSource],
+        refseq: RefSeqHandle,
+        interval: &GenomeInterval,
+        params: &PileupParams,
+    ) -> Result<Self, Error> {
+        let mut iterators = Vec::with_capacity(src.len());
+
+        for src in src {
+            iterators.push(PileupIteratorCore::<T>::new(src, refseq.clone(), params)?);
+        }
+
+        let ref_name = interval.name.clone();
+        let refseq = refseq.clone();
+
+        let mut s = Self {
+            core: iterators,
+            ref_name,
+            refseq,
+            tid: -1,
+            pos: -1,
+            output_tid: -1,
+            output_pos: -1,
+            max_pos: -1,
+        };
+
+        s.set_ref(interval)?;
+        Ok(s)
     }
 }
