@@ -23,7 +23,7 @@ pub(crate) mod refseq;
 pub(crate) mod threading;
 pub(crate) mod utils;
 
-pub use engine::{PileupEngine, PileupSink, PileupStream};
+pub use engine::PileupEngine;
 pub use jobqueue::setup_exit_handler;
 pub use output::write_multiple_outputs;
 
