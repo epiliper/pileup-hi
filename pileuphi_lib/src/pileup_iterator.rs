@@ -70,7 +70,7 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
 
         let rbuf = ReadBuffer::new(params.depth, params.disable_overlaps);
 
-        let read_filter = ReadFilter::new(params.count_orphans, &params.excl_flags, &params.incl_flags)?;
+        let read_filter = ReadFilter::new(params.count_orphans, params.excl_flags, params.incl_flags);
 
         let cur_rec = Record::new();
 

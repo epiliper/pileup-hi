@@ -149,8 +149,8 @@ where `COMMAND` is either `histo` or `plp` for the different output formats. Oth
 - `-d/--depth`: Restrict read buffer to only hold a maximum X number of reads per coordinate. Passing 0 is equivalent to specifying infinite depth. This option will lead to output differences between single- and multi-threaded modes.
 - `x`: disable R1/R2 overlap correction.
 - `A`: count reads with unmapped mates.
-- `--rf`: include reads with these flags only.
-- `--ff`: exclude reads with these flags.
+- `--rf`: include reads with any of these flags. Accepts a decimal, hexadecimal, or octal SAM flag mask, or comma-separated flag names (for example, `16`, `0x10`, or `READ2,REVERSE`).
+- `--ff`: exclude reads with any of these flags. Accepts the same formats as `--rf`.
 - `q/--min-MQ`: minimum mapping quality for a  read's bases to be counted. Default = 0.
 - `-Q/--min-BQ`: minimum phred score for a base to be counted. Default = 13.
 - `-B/--no-BAQ`: Disable BAQ realignment (it's disabled if you don't provide a reference FASTA with `-f`).

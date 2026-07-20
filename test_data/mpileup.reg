@@ -109,11 +109,11 @@ P 39.out pileuphi plp -t $threads -x -r 17:4000-4010 mpileup.1.$fmt
 # P 41.out pileuphi plp -t $threads -l regions -r CHROMOSOME_V:40-60 ce#5b.$fmt
 # P 42.out pileuphi plp -t $threads -l regions -r CHROMOSOME_I:40-60 ce#5b.$fmt
 
-# # --rf and --ff
-# P 43.out $samtools view -h -f 16 mpileup.1.bam | $samtools mpileup -x -
-# P 44.out $samtools view -h mpileup.1.bam | $samtools mpileup -x --rf 0x10 -
-# P 45.out $samtools view -h -F 16 mpileup.1.bam | $samtools mpileup -x -
-# P 46.out $samtools view -h mpileup.1.bam | $samtools mpileup -x --ff 0x714 -
+# --rf and --ff
+P 43.out pileuphi plp -t $threads -x --rf 16 mpileup.1.$fmt
+P 44.out pileuphi plp -t $threads -x --rf 0x10 mpileup.1.$fmt
+P 45.out pileuphi plp -t $threads -x --ff 1812 mpileup.1.$fmt
+P 46.out pileuphi plp -t $threads -x --ff 0x714 mpileup.1.$fmt
 
 # # -d; depth
 P 47.out pileuphi plp -x -d 8500 -B -f mpileup.ref.fa deep.sam|$awk '{print $4}'

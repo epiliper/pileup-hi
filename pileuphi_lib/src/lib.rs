@@ -38,5 +38,4 @@ pub mod outputs {
 
 pub mod param {
     pub use crate::params::{InputParams, PileupParams, STDOUT_ARG_STR};
-    pub use crate::read_filter::BamFlag;
 }
