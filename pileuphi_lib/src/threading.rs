@@ -88,7 +88,7 @@ impl PileupWorker {
         self.handle = Some(std::thread::spawn(move || {
             notify.mark_running();
 
-            let mut out = OutputWriter::new(&job.out, BUFWRITER_CAP, false, false).unwrap();
+            let mut out = OutputWriter::new(&job.out, BUFWRITER_CAP, true, false).unwrap();
 
             let mut iterator = PileupIterator::<T>::from_query(&src, refseq, &job.interval, &params)
                 .expect("Failed to initalize thread pileup iterator");
