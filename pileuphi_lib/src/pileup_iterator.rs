@@ -485,10 +485,11 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                 next_pos = std::cmp::min(next_pos, iter.pos);
             }
 
-            self.pos += 1;
             if next_pos == i64::MAX {
                 return Ok(None);
             }
+
+            self.pos = std::cmp::min(next_pos, self.pos + 1);
 
             let has_output = self
                 .core
