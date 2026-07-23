@@ -5,7 +5,7 @@ edition = "2024"
 
 
 [dependencies]
-pileuphi_lib = { path = "../pileuphi_lib" , features = ["cli"]}
+pileuphi_lib = { path = "../pileuphi_lib" , features = ["cli"], version = "0.9.3" }
 log = "0.4.29"
 clap = {version = "4.5.38", features = ["derive", "cargo"]}
 tikv-jemallocator = "0.5"

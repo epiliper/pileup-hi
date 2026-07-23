@@ -92,6 +92,7 @@ pub struct BamReader {
     pub header: HeaderView,
     pub cur_ref: String,
     pub eof: bool,
+    #[allow(dead_code)]
     pub src: BamDataSource,
 }
 
@@ -154,11 +155,7 @@ impl BamReader {
             }
         }
 
-        if nsampled == 0 {
-            Ok(0)
-        } else {
-            Ok(totallen / nsampled)
-        }
+        Ok(totallen.checked_div(nsampled).unwrap_or(0))
     }
 
     pub fn read_no_alloc(&mut self, stored_read: &mut Record) -> Option<Result<(), Error>> {

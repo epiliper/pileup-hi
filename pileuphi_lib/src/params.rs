@@ -1,5 +1,7 @@
 #[cfg(feature = "cli")]
-use {crate::engine::MIN_COORDS_PER_THREAD, clap::Parser};
+use clap::Parser;
+
+use crate::engine::MIN_COORDS_PER_THREAD;
 
 pub const STDOUT_ARG_STR: &str = "STDOUT";
 pub const DEFAULT_MPLP_DEPTH: usize = 8000;
