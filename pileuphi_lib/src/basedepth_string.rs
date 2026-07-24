@@ -1,3 +1,4 @@
+#![allow(clippy::unused_io_amount)]
 use crate::errors::{Error, ErrorKind};
 use crate::{
     alignment::PileupAlignment,
@@ -58,10 +59,10 @@ impl OrderedPileupOutput for BaseDepthString {
     fn write_header<W: std::io::Write>(ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
 
-        writer.write_all(ctx.ref_name.as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(ctx.ref_name.as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(ctx.pos + 1).as_bytes())?;
+        writer.write(buf.format(ctx.pos + 1).as_bytes())?;
         writer.write_all(b"\t")?;
         Ok(())
     }
@@ -69,52 +70,52 @@ impl OrderedPileupOutput for BaseDepthString {
     #[inline(always)]
     fn write_body<W: std::io::Write>(&self, _ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
-        writer.write_all(buf.format(self.depth).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.depth).as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(self.a).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.a).as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(self.g).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.g).as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(self.c).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.c).as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(self.t).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.t).as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(self.n).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.n).as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(self.gap).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.gap).as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(self.refskip).as_bytes())?;
+        writer.write(buf.format(self.refskip).as_bytes())?;
 
-        writer.write_all(b"\t[")?;
+        writer.write(b"\t[")?;
 
         let n = self.insertions.len() - 1;
         for (i, (ins, cnt)) in self.insertions.iter().enumerate() {
-            writer.write_all(buf.format(*cnt).as_bytes())?;
-            writer.write_all(ins)?;
+            writer.write(buf.format(*cnt).as_bytes())?;
+            writer.write(ins)?;
             if i < n {
-                writer.write_all(b" ")?
+                writer.write(b" ")?;
             };
         }
 
-        writer.write_all(b"]\t[")?;
+        writer.write(b"]\t[")?;
 
         let n = self.deletions.len() - 1;
         for (i, (del, cnt)) in self.deletions.iter().enumerate() {
-            writer.write_all(buf.format(*cnt).as_bytes())?;
-            writer.write_all(del)?;
+            writer.write(buf.format(*cnt).as_bytes())?;
+            writer.write(del)?;
             if i < n {
-                writer.write_all(b" ")?
+                writer.write(b" ")?;
             };
         }
 
-        write!(writer, "]")?;
+        writer.write_all(b"]")?;
         Ok(())
     }
 

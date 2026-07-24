@@ -1,3 +1,5 @@
+#![allow(clippy::unused_io_amount)]
+
 use crate::alignment::PileupAlignment;
 use crate::errors::Error;
 use crate::output::{OrderedPileupOutput, PileupOutputContext};
@@ -69,13 +71,14 @@ impl OrderedPileupOutput for PileupString {
 }
 
 impl PileupString {
+    #[inline(always)]
     fn write_refinfo<W: std::io::Write>(ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
-        writer.write_all(ctx.ref_name.as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(ctx.ref_name.as_bytes())?;
+        writer.write(b"\t")?;
 
-        writer.write_all(buf.format(ctx.pos + 1).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(ctx.pos + 1).as_bytes())?;
+        writer.write(b"\t")?;
 
         let ref_base = if let Some(seq) = ctx.refseq.as_ref() {
             *seq.get(ctx.pos as usize).unwrap_or(&b'N')
@@ -83,21 +86,22 @@ impl PileupString {
             b'N'
         };
 
-        writer.write_all(&[ref_base])?;
+        writer.write(&[ref_base])?;
         writer.write_all(b"\t")?;
         Ok(())
     }
 
+    #[inline(always)]
     fn write_body<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
-        writer.write_all(buf.format(self.depth).as_bytes())?;
-        writer.write_all(b"\t")?;
+        writer.write(buf.format(self.depth).as_bytes())?;
+        writer.write(b"\t")?;
 
         if self.seqbuf.is_empty() {
-            writer.write_all(b"*\t")?
+            writer.write(b"*\t")?;
         } else {
-            writer.write_all(&self.seqbuf)?;
-            writer.write_all(b"\t")?;
+            writer.write(&self.seqbuf)?;
+            writer.write(b"\t")?;
         }
 
         if self.qualbuf.is_empty() {
@@ -120,6 +124,7 @@ impl PileupString {
 }
 
 // cap qualitites at max of 126; this also helps avoid non-ascii output
+#[inline(always)]
 pub fn get_qual(qual: u8) -> u8 {
     match qual.cmp(&93).is_gt() {
         true => 126,

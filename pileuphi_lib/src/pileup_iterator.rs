@@ -343,6 +343,7 @@ impl<T: OrderedPileupOutput> PileupIteratorCore<T> {
         }
     }
 
+    #[inline(always)]
     pub fn step(&mut self) -> Result<Option<()>, Error> {
         loop {
             if self.pos > self.max_pos {
@@ -463,6 +464,7 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
 }
 
 impl<T: OrderedPileupOutput> PileupIterator<T> {
+    #[inline(always)]
     pub fn advance(&mut self) -> Result<Option<()>, Error> {
         loop {
             if self.pos > self.max_pos {
@@ -504,6 +506,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         }
     }
 
+    #[inline(always)]
     pub fn ctx(&self) -> PileupOutputContext<'_> {
         PileupOutputContext {
             tid: self.output_tid,
@@ -513,6 +516,7 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
         }
     }
 
+    #[inline(always)]
     pub fn current(&self) -> impl Iterator<Item = Option<&T>> {
         self.core.iter().map(|core| {
             if !core.is_exhausted() && core.pos == self.pos && core.emit_current {
