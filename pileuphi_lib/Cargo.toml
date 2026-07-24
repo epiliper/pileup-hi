@@ -1,6 +1,6 @@
 [package]
 name = "pileuphi_lib"
-version = "0.9.3"
+version = "0.9.5"
 edition = "2021"
 authors = ["Eli Piliper <epiliper@outlook.com>"]
 description = "High-throughput, extensible SAM/BAM pileup generation library"

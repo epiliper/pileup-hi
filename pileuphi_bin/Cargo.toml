@@ -1,6 +1,6 @@
 [package]
 name = "pileup-hi"
-version = "0.9.3"
+version = "0.9.5"
 edition = "2021"
 authors = ["Eli Piliper <epiliper@outlook.com>"]
 description = "CLI program to generate varying pileup-derived output formats for SAM and BAM"
@@ -23,7 +23,7 @@ pkg-config = "0.3.32"
 maintenance = { status = "actively_developed" }
 
 [dependencies]
-pileuphi_lib = { path = "../pileuphi_lib" , features = ["cli"], version = "0.9.3" }
+pileuphi_lib = { path = "../pileuphi_lib" , features = ["cli"], version = "0.9.5" }
 log = "0.4.29"
 clap = {version = "4.5.38", features = ["derive", "cargo"]}
 tikv-jemallocator = "0.5"
