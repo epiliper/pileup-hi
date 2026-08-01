@@ -427,8 +427,7 @@ fn generate_pileup<T: OrderedPileupOutput>(
                 break;
             }
 
-            // record is old and no longer overlaps the query coordinate. We discard it by not adding
-            // it to the alternate buffer.
+            // record is old and no longer overlaps the query coordinate.
             if read_ends_before_pos(r, pos) || r.rec.tid() < tid {
                 rbuf.remove(idx);
                 continue;
@@ -452,6 +451,7 @@ fn generate_pileup<T: OrderedPileupOutput>(
     Ok(generated)
 }
 
+/// A state machine for walking across one or more samples' coordinates.
 pub struct PileupIterator<T: OrderedPileupOutput> {
     core: Vec<PileupIteratorCore<T>>,
     tid: i32,
@@ -464,6 +464,8 @@ pub struct PileupIterator<T: OrderedPileupOutput> {
 }
 
 impl<T: OrderedPileupOutput> PileupIterator<T> {
+    // advance the pileup iterator to the next coordinate and generate pileups. Will return None when no coordinates
+    // remain to be processed.
     #[inline(always)]
     pub fn advance(&mut self) -> Result<Option<()>, Error> {
         loop {
@@ -480,10 +482,12 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
                     continue;
                 }
 
+                // catch up sub-iterators to current pos
                 while !iter.is_exhausted() && iter.pos <= self.pos {
                     iter.step()?;
                 }
 
+                // jump ahead to next position, ignoring empty ones
                 next_pos = std::cmp::min(next_pos, iter.pos);
             }
 
@@ -517,6 +521,8 @@ impl<T: OrderedPileupOutput> PileupIterator<T> {
     }
 
     #[inline(always)]
+    /// Get all samples' pileups for the iterator's current coordinate. A pileup is returned as None
+    /// if its coordinate is either not in the BAM or fails coverage thresholds (no -a or --aa).
     pub fn current(&self) -> impl Iterator<Item = Option<&T>> {
         self.core.iter().map(|core| {
             if !core.is_exhausted() && core.pos == self.pos && core.emit_current {

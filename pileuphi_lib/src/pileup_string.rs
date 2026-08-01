@@ -19,8 +19,8 @@ const R_REFSKIP: u8 = b'<';
 #[derive(Clone, Debug)]
 /// The standard samtools mpileup string. See the samtools mpileup docs for details.
 pub struct PileupString {
-    seqbuf: Vec<u8>,
-    qualbuf: Vec<u8>,
+    pub seqbuf: Vec<u8>,
+    pub qualbuf: Vec<u8>,
     pub depth: u32,
 }
 
@@ -31,7 +31,8 @@ impl OrderedPileupOutput for PileupString {
     #[inline(always)]
     fn intake(&mut self, ctx: &PileupOutputContext, p: &PileupAlignment) -> Result<(), Error> {
         self.depth += 1;
-        write_plp(p, ctx.pos, &mut self.seqbuf, &mut self.qualbuf, ctx.refseq)?;
+        self.write_plp(p, ctx.pos, ctx.refseq)?;
+        // write_plp(p, ctx.pos, &mut self.seqbuf, &mut self.qualbuf, ctx.refseq)?;
         Ok(())
     }
 
@@ -72,7 +73,7 @@ impl OrderedPileupOutput for PileupString {
 
 impl PileupString {
     #[inline(always)]
-    fn write_refinfo<W: std::io::Write>(ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
+    pub fn write_refinfo<W: std::io::Write>(ctx: &PileupOutputContext, writer: &mut W) -> Result<(), Error> {
         let mut buf = itoa::Buffer::new();
         writer.write(ctx.ref_name.as_bytes())?;
         writer.write(b"\t")?;
@@ -120,6 +121,11 @@ impl PileupString {
             qualbuf: Vec::new(),
             seqbuf: Vec::new(),
         }
+    }
+
+    #[inline(always)]
+    pub fn write_plp(&mut self, p: &PileupAlignment, pos: i64, refseq: &RefSeqHandle) -> Result<(), Error> {
+        write_plp(p, pos, &mut self.seqbuf, &mut self.qualbuf, refseq)
     }
 }
 
