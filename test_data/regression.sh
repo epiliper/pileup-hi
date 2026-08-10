@@ -34,11 +34,19 @@ REF_PATH=`pwd`/md5
 export REF_PATH
 
 THREAD_TEST_COUNTS=(1 4 8)
+RESULTS_TSV=regression-results.tsv
+
+printf 'command\ttest_file\tstatus\n' > "$RESULTS_TSV"
+
+record_result() {
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RESULTS_TSV"
+}
 
 # Executes a single test and compares against the expected output
 run_test() {
     p=$1; shift
     e=$1; shift
+    test_command="$*"
     test_iter=`expr $test_iter + 1`
     [ "$VERBOSE_TESTS" != "" ] && echo "Test cmd: $@"
     # All output here is text, so blanket and naive removal of cr just about works.
@@ -48,6 +56,7 @@ run_test() {
     #result=`eval valgrind --error-exitcode=1 --leak-check=full ${@+"$@"}`
     if [ $? != 0 ]
     then
+        record_result "$test_command" "$e" FAIL
         echo "$e: Error running $@"
         mv _out FAIL-$e.${test_iter}
         nufail=`expr $nufail + 1`
@@ -56,6 +65,7 @@ run_test() {
     then
         if [ "$p" != "P" ]
         then
+            record_result "$test_command" "$e" FAIL
             echo ""
             echo "UNEXPECTED PASS: Task worked when we expected failure;" >&2
             echo "when running $@" >&2
@@ -64,6 +74,7 @@ run_test() {
             nupass=`expr $nupass + 1`
             return 0
         else
+            record_result "$test_command" "$e" PASS
             nepass=`expr $nepass + 1`
             rm _out
             return 1
@@ -71,6 +82,7 @@ run_test() {
     else
         if [ "$p" = "F" ]
         then
+            record_result "$test_command" "$e" PASS
             echo ""
             echo "EXPECTED FAIL: Task failed, but expected to fail;"
             echo "when running $@"
@@ -78,6 +90,7 @@ run_test() {
             rm _out
             return 1
         else
+            record_result "$test_command" "$e" FAIL
             echo ""
             echo "UNEXPECTED FAIL: Output mismatch for $@" >&2
             echo "See FAIL-$e.${test_iter} expected/$e" >&2

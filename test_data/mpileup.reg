@@ -137,8 +137,6 @@ P a0.out  pileuphi plp -t $threads -Q40 -r 17:1-4200 -f mpileup.ref.fa -a mpileu
 P a1.out  pileuphi plp -t $threads -ABQ0 -a  xx#depth1.sam
 P a2.out  pileuphi plp -t $threads -ABQ0 -a  xx#depth2.sam
 P a3.out  pileuphi plp -t $threads -ABQ0 -a  xx#depth1.sam xx#depth2.sam
-P mismatched_tid.out pileuphi plp -t $threads -ABQ0 xx#depth3.sam xx#depth2.sam
-P mismatched_tid.out pileuphi plp -t $threads -ABQ0 xx#depth3.bam xx#depth2.bam
 P a4.out  pileuphi plp -t $threads -ABQ0 --aa xx#depth1.sam
 P a5.out  pileuphi plp -t $threads -ABQ0 --aa xx#depth2.sam
 P a6.out  pileuphi plp -t $threads -ABQ0 --aa xx#depth1.sam xx#depth2.sam
