@@ -4,38 +4,37 @@
 pileup jellyfish" width="65%"/> </p>
 
 <div align="center"> Extensible, high-throughput pileup generation from
-SAM/BAM</div>   
+SAM/BAM/CRAM</div>   
 
 ## Table of contents
+* [what is pileup\-hi?](#what-is-pileup-hi)
+* [what is pileup\-hi <em>not</em>?](#what-is-pileup-hi-not)
+* [Installation and demo instructions](#installation-and-demo-instructions)
+    * [Requirements](#requirements)
+    * [Option 1: install with cargo (recommended)](#option-1-install-with-cargo-recommended)
+    * [Option 2: compile from source](#option-2-compile-from-source)
+    * [Test command](#test-command)
+* [When should I use it over <em>samtools mpileup</em>?](#when-should-i-use-it-over-samtools-mpileup)
+* [How can I use it?](#how-can-i-use-it)
+    * [Options](#options)
+* [Testing](#testing)
+* [The new histo format](#the-new-histo-format)
 
-<!-- START doctoc generated TOC please keep comment here to allow auto update -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+## what is pileup-hi?
+pileup-hi is a program for generating pileups from the SAM, BAM, and CRAM formats quickly. pileup-hi implements a pileup-engine with:   
+- built-in options for sub-reference multi-threading
+- support for custom output formats 
+- zero-copy Rust API for creating and iterating over pileup data streams
+- binary-identical output to samtools mpileup when using the `mpileup` output format with the binary described in this repo (see [testing](#testing))
 
-- [What pileup-hi is (and what it is not)](#what-pileup-hi-is-and-what-it-is-not)
-- [Installation and demo instructions](#installation-and-demo-instructions)
-    - [Requirements](#requirements)
-    - [Option 1: install with cargo (recommended)](#option-1-install-with-cargo-recommended)
-    - [Option 2: compile from source](#option-2-compile-from-source)
-    - [Test command](#test-command)
-- [When should I use it over _samtools mpileup_?](#when-should-i-use-it-over-_samtools-mpileup_)
-- [How can I use it?](#how-can-i-use-it)
-  - [Options](#options)
-- [Testing](#testing)
-- [The new `histo` format](#the-new-histo-format)
+this repository contains:
+- the pileup-hi_bin binary crate, which behaves similarly to _samtools mpileup_.
+- the pileup-hi_lib crate, which implements the underlying pileup engine and API.
 
-<!-- END doctoc generated TOC please keep comment here to allow auto update -->
-
-## What pileup-hi is (and what it is not)
-pileup-hi is a high-throughput pileup engine for the SAM/BAM file formats. It is multi-threaded and supports the development of custom output formats. This repository contains code to compile the CLI program itself, as well as library code detailing how to construct your own output format (`src/output.rs`).
-
+## what is pileup-hi _not_?
 pileup-hi is not an end-to-end variant calling platform: like _samtools mpileup_, it is a low-level SAM/BAM parser that is meant to be built upon with tools that identify variants, assemble genomes, etc. (e.g. iVar). pileup-hi was developed to retrieve raw nucleotide alignment data from datasets with size/depth that is computationally challenging for other software. 
 
 If an end-to-end variant calling pipeline that handles statistics and math is what you need, check out GATK's HaplotypeCaller and Mutect2 utilities, or iVar if you deal with viruses.
-
-pileup-hi currently has two subcommands that dictate which output format it emits: 
-
-- `plp`: standard _samtools mpileup_ output format.
-- `histo`: a list of nucleotide and indel frequencies per coordinate, essentially a condensed form of the pileup format that doesn't grow linearly with alignment depth.
 
 ## Installation and demo instructions
 #### Requirements
@@ -43,7 +42,7 @@ pileup-hi currently has two subcommands that dictate which output format it emit
 
 If you need to install or upgrade htslib on MacOS, see about installing it via [homebrew](https://brew.sh/) for easy upgrading in the future. For Linux, please use your distribution's package manager.
 
-####  Option 1: install with cargo (recommended)
+####  Option 1: install with cargo \(recommended\)
 If you don't have cargo installed, see [here](https://rust-lang.org/tools/install/).
 ```bash
 cargo install pileup-hi
@@ -124,14 +123,13 @@ This question is answered in detail in the manuscript associated with this softw
 In short:  
 
 1. You want to process alignments to very long (e.g. eukaryotic) genomes and want to save time.
+    - note that parallel execution can work at the sub-reference level, so you don't need a multi-chromosome alignment to use this.
 2. You have very high-depth datasets and you wish to save space with the abbreviated histo format, as well as save time.
-3. When you want to leverage multiple CPU cores to gain a speedup with longer genomes (even if your BAM only has one reference).
 
 ## How can I use it?
 pileup-hi attempts to stay consistent with the CLI of samtools mpileup when possible. Below are a list of parameters you can supply. Run `pileuphi <plp|histo> --help` for more information.
 
 usage: `pileuphi <COMMAND> <FILE> [OPTIONS]`
-
 
 where `COMMAND` is either `histo` or `plp` for the different output formats. Other arguments are shared for both commands.
 
